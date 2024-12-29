@@ -1,6 +1,6 @@
 {
   "name": "@quentinadam/zod",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A simple library to parse data, inspired by zod",
   "license": "MIT",
   "exports": "./src/zod.ts",
