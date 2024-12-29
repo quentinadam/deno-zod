@@ -61,9 +61,9 @@ export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
             }
           }
           const result: Record<string, unknown> = {};
-          for (const key of Object.keys(schema)) {
-            result[key] = schema[key].parse(value[key]);
-          }
+          Object.entries(schema).forEach(([key, schema]) => {
+            result[key] = schema.parse(value[key]);
+          });
           return result as T;
         })(value as Record<string, unknown>);
       },
@@ -205,7 +205,7 @@ function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema
       if (!Array.isArray(value) || value.length !== schema.length) {
         throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
       }
-      return value.map((item, index) => schema[index].parse(item)) as T;
+      return schema.map((schema, index) => schema.parse(value[index])) as T;
     },
   });
 }
