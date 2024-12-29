@@ -1,0 +1,16 @@
+{
+  "version": "4",
+  "specifiers": {
+    "npm:typescript@^5.7.2": "5.7.2"
+  },
+  "npm": {
+    "typescript@5.7.2": {
+      "integrity": "sha512-i5t66RHxDvVN40HfDd1PsEThGNnlMCMT3jMUuoh9/0TaqWevNontacunWyN02LA9/fIbEWlcHZcgTKb9QoaLfg=="
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:typescript@^5.7.2"
+    ]
+  }
+}

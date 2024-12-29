@@ -11,7 +11,7 @@ export class Schema<T> {
     return this.#parseFn(value);
   }
 
-  safeParse(value: unknown): { success: true; data: T } | { success: false; error: Error } {
+  safeParse(value: unknown): { success: true; data: T } | { success: false; error: unknown } {
     try {
       return { success: true, data: this.parse(value) };
     } catch (error) {
