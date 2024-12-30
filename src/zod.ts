@@ -272,15 +272,15 @@ function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schem
   });
 }
 
-function createLiteralSchema<T extends string | number | boolean | null>(value: T): Schema<T> {
-  const inputType = JSON.stringify(value);
+function createLiteralSchema<T extends string | number | boolean | null>(litteral: T): Schema<T> {
+  const inputType = JSON.stringify(litteral);
   return new Schema({
     inputType,
-    parseFn: (input) => {
-      if (input !== value) {
-        throw new Error(`Expected ${inputType}, got ${input}`);
+    parseFn: (value) => {
+      if (value !== litteral) {
+        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
       }
-      return value;
+      return litteral;
     },
   });
 }
