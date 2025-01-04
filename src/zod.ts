@@ -96,28 +96,15 @@ export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
   }
 }
 
-function createStringSchema(): Schema<string> {
-  const inputType = 'string';
+function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
+  const inputType = `Array<${schema.inputType}>`;
   return new Schema({
     inputType,
     parseFn: (value) => {
-      if (typeof value !== 'string') {
+      if (!Array.isArray(value)) {
         throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
       }
-      return value;
-    },
-  });
-}
-
-function createNumberSchema(): Schema<number> {
-  const inputType = 'number';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (typeof value !== 'number') {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
-      }
-      return value;
+      return value.map((item) => schema.parse(item));
     },
   });
 }
@@ -135,48 +122,12 @@ function createBigIntSchema(): Schema<bigint> {
   });
 }
 
-function createUnknownSchema(): Schema<unknown> {
-  const inputType = 'unknown';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      return value;
-    },
-  });
-}
-
 function createBooleanSchema(): Schema<boolean> {
   const inputType = 'boolean';
   return new Schema({
     inputType,
     parseFn: (value) => {
       if (typeof value !== 'boolean') {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
-      }
-      return value;
-    },
-  });
-}
-
-function createNullSchema(): Schema<null> {
-  const inputType = 'null';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (value !== null) {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
-      }
-      return value;
-    },
-  });
-}
-
-function createUndefinedSchema(): Schema<undefined> {
-  const inputType = 'undefined';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (value !== undefined) {
         throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
       }
       return value;
@@ -197,26 +148,8 @@ function createDateSchema(): Schema<Date> {
   });
 }
 
-function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema<T[K]> }): Schema<T> {
-  const inputType = `[ ${schema.map((schema) => schema.inputType).join(', ')} ]`;
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (!Array.isArray(value) || value.length !== schema.length) {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
-      }
-      return schema.map((schema, index) => schema.parse(value[index])) as T;
-    },
-  });
-}
-
-function createObjectSchema<T extends Record<string, unknown>>(
-  schema: { [K in keyof T]: Schema<T[K]> },
-): ObjectSchema<T> {
-  return new ObjectSchema<T>(schema);
-}
-
-function createInstanceofSchema<T>(schema: { new (...args: unknown[]): T }): Schema<T> {
+// deno-lint-ignore no-explicit-any
+function createInstanceofSchema<T>(schema: { new (...args: any[]): T }): Schema<T> {
   const inputType = schema.name;
   return new Schema({
     inputType,
@@ -229,15 +162,54 @@ function createInstanceofSchema<T>(schema: { new (...args: unknown[]): T }): Sch
   });
 }
 
-function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
-  const inputType = `Array<${schema.inputType}>`;
+function createLazySchema<T>(fn: () => Schema<T>): Schema<T> {
+  return new Schema({
+    inputType: '(lazy)',
+    parseFn: (value) => fn().parse(value),
+  });
+}
+
+function createLiteralSchema<T extends string | number | boolean | null>(litteral: T): Schema<T> {
+  const inputType = JSON.stringify(litteral);
   return new Schema({
     inputType,
     parseFn: (value) => {
-      if (!Array.isArray(value)) {
+      if (value !== litteral) {
         throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
       }
-      return value.map((item) => schema.parse(item));
+      return litteral;
+    },
+  });
+}
+
+function createObjectSchema<T extends Record<string, unknown>>(
+  schema: { [K in keyof T]: Schema<T[K]> },
+): ObjectSchema<T> {
+  return new ObjectSchema<T>(schema);
+}
+
+function createNullSchema(): Schema<null> {
+  const inputType = 'null';
+  return new Schema({
+    inputType,
+    parseFn: (value) => {
+      if (value !== null) {
+        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+      }
+      return value;
+    },
+  });
+}
+
+function createNumberSchema(): Schema<number> {
+  const inputType = 'number';
+  return new Schema({
+    inputType,
+    parseFn: (value) => {
+      if (typeof value !== 'number') {
+        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+      }
+      return value;
     },
   });
 }
@@ -251,6 +223,45 @@ function createRecordSchema<T>(schema: Schema<T>): Schema<Record<string, T>> {
         throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
       }
       return Object.fromEntries(Object.entries(value).map(([key, value]) => [key, schema.parse(value)]));
+    },
+  });
+}
+
+function createStringSchema(): Schema<string> {
+  const inputType = 'string';
+  return new Schema({
+    inputType,
+    parseFn: (value) => {
+      if (typeof value !== 'string') {
+        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+      }
+      return value;
+    },
+  });
+}
+
+function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema<T[K]> }): Schema<T> {
+  const inputType = `[ ${schema.map((schema) => schema.inputType).join(', ')} ]`;
+  return new Schema({
+    inputType,
+    parseFn: (value) => {
+      if (!Array.isArray(value) || value.length !== schema.length) {
+        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+      }
+      return schema.map((schema, index) => schema.parse(value[index])) as T;
+    },
+  });
+}
+
+function createUndefinedSchema(): Schema<undefined> {
+  const inputType = 'undefined';
+  return new Schema({
+    inputType,
+    parseFn: (value) => {
+      if (value !== undefined) {
+        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+      }
+      return value;
     },
   });
 }
@@ -272,15 +283,12 @@ function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schem
   });
 }
 
-function createLiteralSchema<T extends string | number | boolean | null>(litteral: T): Schema<T> {
-  const inputType = JSON.stringify(litteral);
+function createUnknownSchema(): Schema<unknown> {
+  const inputType = 'unknown';
   return new Schema({
     inputType,
     parseFn: (value) => {
-      if (value !== litteral) {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
-      }
-      return litteral;
+      return value;
     },
   });
 }
@@ -291,6 +299,7 @@ export {
   createBooleanSchema as boolean,
   createDateSchema as date,
   createInstanceofSchema as instanceof,
+  createLazySchema as lazy,
   createLiteralSchema as literal,
   createNullSchema as null,
   createNumberSchema as number,

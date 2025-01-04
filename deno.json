@@ -3,6 +3,11 @@
   "version": "0.1.2",
   "description": "A simple library to parse data, inspired by zod",
   "license": "MIT",
+  "author": "Quentin Adam",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quentinadam/deno-zod.git"
+  },
   "exports": "./src/zod.ts",
   "imports": {
     "typescript": "npm:typescript@^5.7.2"
