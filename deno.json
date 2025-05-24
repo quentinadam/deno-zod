@@ -9,9 +9,6 @@
     "url": "git+https://github.com/quentinadam/deno-zod.git"
   },
   "exports": "./src/zod.ts",
-  "imports": {
-    "typescript": "npm:typescript@^5.7.2"
-  },
   "fmt": {
     "singleQuote": true,
     "lineWidth": 120
@@ -19,5 +16,8 @@
   "compilerOptions": {
     "noUncheckedIndexedAccess": true,
     "noImplicitReturns": true
+  },
+  "imports": {
+    "typescript": "npm:typescript@^5.8.3"
   }
 }
