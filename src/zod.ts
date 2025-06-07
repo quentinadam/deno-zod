@@ -1,295 +1,397 @@
-export class Schema<T> {
-  readonly #parseFn: (value: unknown) => T;
-  readonly inputType: string;
+type Path = (string | number)[];
+type Context = { path: Path; errors: { path: Path; message: string }[] };
+type Result<T> = { success: true; data: T } | { success: false };
 
-  constructor({ inputType, parseFn }: { inputType: string; parseFn: (value: unknown) => T }) {
-    this.#parseFn = parseFn;
-    this.inputType = inputType;
+export function getType(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+export class Schema<T> {
+  protected readonly safeParseFn: (value: unknown, context?: Context) => Result<T>;
+
+  constructor(safeParseFn: (value: unknown, context?: Context) => Result<T>) {
+    this.safeParseFn = safeParseFn;
   }
 
   parse(value: unknown): T {
-    return this.#parseFn(value);
+    const result = this.safeParse(value);
+    if (result.success) {
+      return result.data;
+    }
+    throw new Error(result.message);
   }
 
-  safeParse(value: unknown): { success: true; data: T } | { success: false; error: unknown } {
-    try {
-      return { success: true, data: this.parse(value) };
-    } catch (error) {
-      return { success: false, error };
+  safeParse(value: unknown):
+    | { success: true; data: T }
+    | { success: false; message: string; errors: { path: Path; message: string }[] } {
+    const context: Context = { path: [], errors: [] };
+    const result = this.safeParseFn(value, context);
+    if (result.success) {
+      return result;
     }
+    return {
+      success: false,
+      message: `Validation failed: ${
+        context.errors.map((e) => `${e.message} (at path /${e.path.join('/')})`).join(', ')
+      }`,
+      errors: context.errors,
+    };
+  }
+
+  internalSafeParse(value: unknown, context?: Context): Result<T> {
+    return this.safeParseFn(value, context);
   }
 
   transform<U>(transform: (value: T) => U): Schema<U> {
-    return new Schema({ inputType: this.inputType, parseFn: (value) => transform(this.parse(value)) });
+    return new Schema((value, context): { success: true; data: U } | { success: false } => {
+      try {
+        const result = this.internalSafeParse(value, context);
+        if (result.success) {
+          return { success: true, data: transform(result.data) };
+        }
+        return result;
+      } catch (error) {
+        if (context !== undefined) {
+          context.errors.push({ path: context.path, message: error instanceof Error ? error.message : String(error) });
+        }
+        return { success: false };
+      }
+    });
   }
 
   optional(): Schema<T | undefined> {
-    return new Schema({
-      inputType: `${this.inputType} | undefined`,
-      parseFn: (value) => value === undefined ? undefined : this.parse(value),
-    });
+    return createOptionalSchema<T>(this);
   }
 
   nullable(): Schema<T | null> {
-    return new Schema({
-      inputType: `${this.inputType} | null`,
-      parseFn: (value) => value === null ? null : this.parse(value),
-    });
+    return createNullableSchema<T>(this);
+  }
+
+  nullish(): Schema<T | null | undefined> {
+    return createNullishSchema<T>(this);
   }
 }
 
 export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
   readonly #schema: { [K in keyof T]: Schema<T[K]> };
-  readonly #strict: boolean;
+
+  get shape(): { [K in keyof T]: Schema<T[K]> } {
+    return this.#schema;
+  }
 
   constructor(schema: { [K in keyof T]: Schema<T[K]> }, strict = false) {
-    const inputType = `{ ${
-      Object.entries(schema).map(([key, schema]) => `"${key}": ${schema.inputType}`).join(', ')
-    } }`;
-    super({
-      inputType,
-      parseFn: (value) => {
-        if (typeof value !== 'object' || value === null) {
-          throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+    super((value, context) => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        if (context !== undefined) {
+          context.errors.push({ path: context.path, message: `Expected object, got ${getType(value)}` });
         }
-        return ((value) => {
-          if (strict) {
-            for (const key of Object.keys(value as Record<string, unknown>)) {
-              if (!(key in schema)) {
-                throw new Error(`Expected strict ${this.inputType}, got ${JSON.stringify(value)}`);
-              }
+        return { success: false };
+      }
+      const object = value as Record<string, unknown>;
+      const result = (() => {
+        const parsedObject: Record<string, unknown> = {};
+        for (const [key, valueSchema] of Object.entries<Schema<unknown>>(schema)) {
+          const result = valueSchema.internalSafeParse(object[key]);
+          if (!result.success) {
+            return result;
+          }
+          parsedObject[key] = result.data;
+        }
+        if (strict) {
+          for (const key of Object.keys(object)) {
+            if (!(key in schema)) {
+              return { success: false as const };
             }
           }
-          const result: Record<string, unknown> = {};
-          Object.entries(schema).forEach(([key, schema]) => {
-            result[key] = schema.parse(value[key]);
-          });
-          return result as T;
-        })(value as Record<string, unknown>);
-      },
+        }
+        return { success: true, data: parsedObject as T };
+      })();
+      if (result.success) {
+        return result;
+      }
+      if (context !== undefined) {
+        for (const [key, valueSchema] of Object.entries(schema)) {
+          valueSchema.internalSafeParse(object[key], { path: [...context.path, key], errors: context.errors });
+        }
+        if (strict) {
+          const unrecognizedKeys = new Array<string>();
+          for (const key of Object.keys(object)) {
+            if (!(key in schema)) {
+              unrecognizedKeys.push(key);
+            }
+          }
+          if (unrecognizedKeys.length > 0) {
+            context.errors.push({ path: context.path, message: `Unrecognized keys: ${unrecognizedKeys.join(', ')}` });
+          }
+        }
+      }
+      return { success: false };
     });
     this.#schema = schema;
-    this.#strict = strict;
-  }
-
-  extend<U extends Record<string, unknown>>(newSchema: { [K in keyof U]: Schema<U[K]> }): ObjectSchema<T & U> {
-    return new ObjectSchema(
-      { ...this.#schema, ...newSchema } as { [K in keyof (T & U)]: Schema<(T & U)[K]> },
-      this.#strict,
-    );
-  }
-
-  strict(): ObjectSchema<T> {
-    return new ObjectSchema(this.#schema, true);
-  }
-
-  strip(): ObjectSchema<T> {
-    return new ObjectSchema(this.#schema, false);
-  }
-
-  partial(): ObjectSchema<{ [K in keyof T]: T[K] | undefined }> {
-    const schema = Object.fromEntries(Object.entries(this.#schema).map(([key, schema]) => [key, schema.optional()]));
-    return new ObjectSchema<{ [K in keyof T]: T[K] | undefined }>(
-      schema as { [K in keyof T]: Schema<T[K] | undefined> },
-      this.#strict,
-    );
   }
 }
 
 function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
-  const inputType = `Array<${schema.inputType}>`;
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (!Array.isArray(value)) {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+  return new Schema((value, context) => {
+    if (!Array.isArray(value)) {
+      if (context !== undefined) {
+        context.errors.push({ path: context.path, message: `Expected array, got ${getType(value)}` });
       }
-      return value.map((item) => schema.parse(item));
-    },
+      return { success: false };
+    }
+    const result = (() => {
+      const parsedItems = new Array<T>();
+      for (const item of value) {
+        const result = schema.internalSafeParse(item);
+        if (!result.success) {
+          return result;
+        } else {
+          parsedItems.push(result.data);
+        }
+      }
+      return { success: true, data: parsedItems };
+    })();
+    if (result.success) {
+      return result;
+    }
+    if (context !== undefined) {
+      for (let index = 0; index < value.length; index++) {
+        const item = value[index];
+        schema.internalSafeParse(item, { path: [...context.path, index], errors: context.errors });
+      }
+    }
+    return { success: false };
   });
 }
 
 function createBigIntSchema(): Schema<bigint> {
-  const inputType = 'bigint';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (typeof value !== 'bigint') {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+  return new Schema<bigint>((value, context) => {
+    if (typeof value !== 'bigint') {
+      if (context !== undefined) {
+        context.errors.push({ path: context.path, message: `Expected bigint, got ${getType(value)}` });
       }
-      return value;
-    },
+      return { success: false };
+    }
+    return { success: true, data: value };
   });
 }
 
 function createBooleanSchema(): Schema<boolean> {
-  const inputType = 'boolean';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (typeof value !== 'boolean') {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+  return new Schema<boolean>((value, context) => {
+    if (typeof value !== 'boolean') {
+      if (context !== undefined) {
+        context.errors.push({ path: context.path, message: `Expected boolean, got ${getType(value)}` });
       }
-      return value;
-    },
+      return { success: false };
+    }
+    return { success: true, data: value };
   });
 }
 
 function createDateSchema(): Schema<Date> {
-  const inputType = 'Date';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (!(value instanceof Date)) {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
-      }
-      return value;
-    },
-  });
+  return createInstanceofSchema<Date>(Date);
 }
 
 // deno-lint-ignore no-explicit-any
 function createInstanceofSchema<T>(schema: { new (...args: any[]): T }): Schema<T> {
-  const inputType = schema.name;
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (!(value instanceof schema)) {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+  return new Schema<T>((value, context) => {
+    if (!(value instanceof schema)) {
+      if (context !== undefined) {
+        context.errors.push({
+          path: context.path,
+          message: `Expected instance of ${schema.name}, got ${getType(value)}`,
+        });
       }
-      return value;
-    },
+      return { success: false };
+    }
+    return { success: true, data: value };
   });
 }
 
 function createLazySchema<T>(fn: () => Schema<T>): Schema<T> {
-  return new Schema({
-    inputType: '(lazy)',
-    parseFn: (value) => fn().parse(value),
-  });
+  return new Schema((value, context) => fn().internalSafeParse(value, context));
 }
 
-function createLiteralSchema<T extends string | number | boolean | null>(litteral: T): Schema<T> {
-  const inputType = JSON.stringify(litteral);
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (value !== litteral) {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+function createLiteralSchema<T extends string | number | boolean | null | undefined>(literal: T | T[]): Schema<T> {
+  if (Array.isArray(literal)) {
+    return createUnionSchema(literal.map((item) => createLiteralSchema(item)));
+  }
+  return new Schema<T>((value, context) => {
+    if (value !== literal) {
+      if (context !== undefined) {
+        context.errors.push({ path: context.path, message: `Expected literal ${literal}, got ${getType(value)}` });
       }
-      return litteral;
-    },
+      return { success: false };
+    }
+    return { success: true, data: literal };
   });
 }
 
-function createObjectSchema<T extends Record<string, unknown>>(
-  schema: { [K in keyof T]: Schema<T[K]> },
-): ObjectSchema<T> {
-  return new ObjectSchema<T>(schema);
+function createObjectSchema<T extends Record<string, unknown>>(schema: { [K in keyof T]: Schema<T[K]> }): Schema<T> {
+  return new ObjectSchema<T>(schema, false);
+}
+
+function createOptionalSchema<T>(schema: Schema<T>): Schema<T | undefined> {
+  return createUnionSchema([createUndefinedSchema(), schema]);
+}
+
+function createNullableSchema<T>(schema: Schema<T>): Schema<T | null> {
+  return createUnionSchema([createNullSchema(), schema]);
 }
 
 function createNullSchema(): Schema<null> {
-  const inputType = 'null';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (value !== null) {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+  return new Schema<null>((value, context) => {
+    if (value !== null) {
+      if (context !== undefined) {
+        context.errors.push({ path: context.path, message: `Expected null, got ${getType(value)}` });
       }
-      return value;
-    },
+      return { success: false };
+    }
+    return { success: true, data: value };
   });
 }
 
+function createNullishSchema<T>(schema: Schema<T>): Schema<T | null | undefined> {
+  return createUnionSchema([createNullSchema(), createUndefinedSchema(), schema]);
+}
+
 function createNumberSchema(): Schema<number> {
-  const inputType = 'number';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (typeof value !== 'number') {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+  return new Schema<number>((value, context) => {
+    if (typeof value !== 'number') {
+      if (context !== undefined) {
+        context.errors.push({ path: context.path, message: `Expected number, got ${getType(value)}` });
       }
-      return value;
-    },
+      return { success: false };
+    }
+    return { success: true, data: value };
   });
 }
 
 function createRecordSchema<T>(schema: Schema<T>): Schema<Record<string, T>> {
-  const inputType = `Record<string, ${schema.inputType}>`;
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (typeof value !== 'object' || value === null) {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+  return new Schema<Record<string, T>>((record, context) => {
+    if (typeof record !== 'object' || record === null || Array.isArray(record)) {
+      throw new Error(`Expected object, got ${getType(record)}`);
+    }
+    const result = (() => {
+      const parsedObject: Record<string, T> = {};
+      for (const [key, value] of Object.entries(record)) {
+        const result = schema.internalSafeParse(value);
+        if (!result.success) {
+          return result;
+        }
+        parsedObject[key] = result.data;
       }
-      return Object.fromEntries(Object.entries(value).map(([key, value]) => [key, schema.parse(value)]));
-    },
+      return { success: true, data: parsedObject };
+    })();
+    if (result.success) {
+      return result;
+    }
+    if (context !== undefined) {
+      for (const [key, value] of Object.entries(record)) {
+        schema.internalSafeParse(value, { path: [...context.path, key], errors: context.errors });
+      }
+    }
+    return { success: false };
   });
 }
 
+function createStrictObjectSchema<T extends Record<string, unknown>>(
+  schema: { [K in keyof T]: Schema<T[K]> },
+): Schema<T> {
+  return new ObjectSchema<T>(schema, true);
+}
+
 function createStringSchema(): Schema<string> {
-  const inputType = 'string';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (typeof value !== 'string') {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+  return new Schema<string>((value, context) => {
+    if (typeof value !== 'string') {
+      if (context !== undefined) {
+        context.errors.push({ path: context.path, message: `Expected string, got ${getType(value)}` });
       }
-      return value;
-    },
+      return { success: false };
+    }
+    return { success: true, data: value };
   });
 }
 
 function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema<T[K]> }): Schema<T> {
-  const inputType = `[ ${schema.map((schema) => schema.inputType).join(', ')} ]`;
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (!Array.isArray(value) || value.length !== schema.length) {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+  return new Schema((value, context) => {
+    if (!Array.isArray(value)) {
+      if (context !== undefined) {
+        context.errors.push({ path: context.path, message: `Expected array, got ${getType(value)}` });
       }
-      return schema.map((schema, index) => schema.parse(value[index])) as T;
-    },
+      return { success: false };
+    }
+    if (value.length !== schema.length) {
+      if (context !== undefined) {
+        context.errors.push({
+          path: context.path,
+          message: `Expected array of length ${schema.length}, got array of length ${value.length}`,
+        });
+      }
+      return { success: false };
+    }
+    const result = (() => {
+      const parsedItems: unknown[] = [];
+      let index = 0;
+      for (const itemSchema of schema) {
+        const result = itemSchema.internalSafeParse(value[index]);
+        if (!result.success) {
+          return result;
+        }
+        parsedItems.push(result.data);
+        index++;
+      }
+      return { success: true, data: parsedItems as T };
+    })();
+    if (result.success) {
+      return result;
+    }
+    if (context !== undefined) {
+      let index = 0;
+      for (const itemSchema of schema) {
+        itemSchema.internalSafeParse(value[index], { path: [...context.path, index], errors: context.errors });
+        index++;
+      }
+    }
+    return { success: false };
   });
 }
 
 function createUndefinedSchema(): Schema<undefined> {
-  const inputType = 'undefined';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      if (value !== undefined) {
-        throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
+  return new Schema<undefined>((value, context) => {
+    if (value !== undefined) {
+      if (context !== undefined) {
+        context.errors.push({ path: context.path, message: `Expected undefined, got ${getType(value)}` });
       }
-      return value;
-    },
+      return { success: false };
+    }
+    return { success: true, data: value };
   });
 }
 
 function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schema<T[K]> }): Schema<T[number]> {
-  const inputType = schemas.map((schema) => schema.inputType).join(' | ');
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      for (const schema of schemas) {
-        try {
-          return schema.parse(value);
-        } catch (_) {
-          continue;
-        }
+  return new Schema<T[number]>((value, context) => {
+    for (const schema of schemas) {
+      const result = schema.internalSafeParse(value);
+      if (result.success) {
+        return result;
       }
-      throw new Error(`Expected ${inputType}, got ${JSON.stringify(value)}`);
-    },
+    }
+    if (context !== undefined) {
+      for (const schema of schemas) {
+        schema.internalSafeParse(value, context);
+      }
+    }
+    return { success: false };
   });
 }
 
 function createUnknownSchema(): Schema<unknown> {
-  const inputType = 'unknown';
-  return new Schema({
-    inputType,
-    parseFn: (value) => {
-      return value;
-    },
+  return new Schema<unknown>((value) => {
+    return { success: true, data: value };
   });
 }
 
@@ -301,10 +403,14 @@ export {
   createInstanceofSchema as instanceof,
   createLazySchema as lazy,
   createLiteralSchema as literal,
+  createNullableSchema as nullable,
+  createNullishSchema as nullish,
   createNullSchema as null,
   createNumberSchema as number,
   createObjectSchema as object,
+  createOptionalSchema as optional,
   createRecordSchema as record,
+  createStrictObjectSchema as strictObject,
   createStringSchema as string,
   createTupleSchema as tuple,
   createUndefinedSchema as undefined,
