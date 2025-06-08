@@ -230,7 +230,9 @@ function createLiteralSchema<T extends string | number | boolean | null | undefi
   });
 }
 
-function createObjectSchema<T extends Record<string, unknown>>(schema: { [K in keyof T]: Schema<T[K]> }): Schema<T> {
+function createObjectSchema<T extends Record<string, unknown>>(
+  schema: { [K in keyof T]: Schema<T[K]> },
+): ObjectSchema<T> {
   return new ObjectSchema<T>(schema, false);
 }
 
@@ -240,6 +242,10 @@ function createOptionalSchema<T>(schema: Schema<T>): Schema<T | undefined> {
 
 function createNullableSchema<T>(schema: Schema<T>): Schema<T | null> {
   return createUnionSchema([createNullSchema(), schema]);
+}
+
+function createNullishSchema<T>(schema: Schema<T>): Schema<T | null | undefined> {
+  return createUnionSchema([createNullSchema(), createUndefinedSchema(), schema]);
 }
 
 function createNullSchema(): Schema<null> {
@@ -252,10 +258,6 @@ function createNullSchema(): Schema<null> {
     }
     return { success: true, data: value };
   });
-}
-
-function createNullishSchema<T>(schema: Schema<T>): Schema<T | null | undefined> {
-  return createUnionSchema([createNullSchema(), createUndefinedSchema(), schema]);
 }
 
 function createNumberSchema(): Schema<number> {
