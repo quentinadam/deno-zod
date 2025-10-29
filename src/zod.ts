@@ -2,10 +2,22 @@ type Path = (string | number)[];
 type Context = { path: Path; errors: { path: Path; message: string }[] };
 type Result<T> = { success: true; data: T } | { success: false };
 
-export function getType(value: unknown): string {
+export function inspectValue(value: unknown): string {
   if (value === undefined) return 'undefined';
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';
+  if (typeof value === 'string') {
+    return `string ${value.length > 32 ? JSON.stringify(value.slice(0, 32) + '...') : JSON.stringify(value)}`;
+  }
+  if (typeof value === 'number') {
+    return `number ${value}`;
+  }
+  if (typeof value === 'bigint') {
+    return `bigint ${value.toString()}`;
+  }
+  if (typeof value === 'boolean') {
+    return `boolean ${value}`;
+  }
   return typeof value;
 }
 
@@ -86,7 +98,7 @@ export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
     super((value, context) => {
       if (typeof value !== 'object' || value === null || Array.isArray(value)) {
         if (context !== undefined) {
-          context.errors.push({ path: context.path, message: `Expected object, got ${getType(value)}` });
+          context.errors.push({ path: context.path, message: `Expected object, got ${inspectValue(value)}` });
         }
         return { success: false };
       }
@@ -138,7 +150,7 @@ function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
   return new Schema((value, context) => {
     if (!Array.isArray(value)) {
       if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected array, got ${getType(value)}` });
+        context.errors.push({ path: context.path, message: `Expected array, got ${inspectValue(value)}` });
       }
       return { success: false };
     }
@@ -171,7 +183,7 @@ function createBigIntSchema(): Schema<bigint> {
   return new Schema<bigint>((value, context) => {
     if (typeof value !== 'bigint') {
       if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected bigint, got ${getType(value)}` });
+        context.errors.push({ path: context.path, message: `Expected bigint, got ${inspectValue(value)}` });
       }
       return { success: false };
     }
@@ -183,7 +195,7 @@ function createBooleanSchema(): Schema<boolean> {
   return new Schema<boolean>((value, context) => {
     if (typeof value !== 'boolean') {
       if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected boolean, got ${getType(value)}` });
+        context.errors.push({ path: context.path, message: `Expected boolean, got ${inspectValue(value)}` });
       }
       return { success: false };
     }
@@ -202,7 +214,7 @@ function createInstanceofSchema<T>(schema: { new (...args: any[]): T }): Schema<
       if (context !== undefined) {
         context.errors.push({
           path: context.path,
-          message: `Expected instance of ${schema.name}, got ${getType(value)}`,
+          message: `Expected instance of ${schema.name}, got ${inspectValue(value)}`,
         });
       }
       return { success: false };
@@ -222,7 +234,10 @@ function createLiteralSchema<T extends string | number | boolean | null | undefi
   return new Schema<T>((value, context) => {
     if (value !== literal) {
       if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected literal ${literal}, got ${getType(value)}` });
+        context.errors.push({
+          path: context.path,
+          message: `Expected literal ${JSON.stringify(literal)}, got ${inspectValue(value)}`,
+        });
       }
       return { success: false };
     }
@@ -252,7 +267,7 @@ function createNullSchema(): Schema<null> {
   return new Schema<null>((value, context) => {
     if (value !== null) {
       if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected null, got ${getType(value)}` });
+        context.errors.push({ path: context.path, message: `Expected null, got ${inspectValue(value)}` });
       }
       return { success: false };
     }
@@ -264,7 +279,7 @@ function createNumberSchema(): Schema<number> {
   return new Schema<number>((value, context) => {
     if (typeof value !== 'number') {
       if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected number, got ${getType(value)}` });
+        context.errors.push({ path: context.path, message: `Expected number, got ${inspectValue(value)}` });
       }
       return { success: false };
     }
@@ -275,7 +290,10 @@ function createNumberSchema(): Schema<number> {
 function createRecordSchema<T>(schema: Schema<T>): Schema<Record<string, T>> {
   return new Schema<Record<string, T>>((record, context) => {
     if (typeof record !== 'object' || record === null || Array.isArray(record)) {
-      throw new Error(`Expected object, got ${getType(record)}`);
+      if (context !== undefined) {
+        context.errors.push({ path: context.path, message: `Expected object, got ${inspectValue(record)}` });
+      }
+      return { success: false };
     }
     const result = (() => {
       const parsedObject: Record<string, T> = {};
@@ -310,7 +328,7 @@ function createStringSchema(): Schema<string> {
   return new Schema<string>((value, context) => {
     if (typeof value !== 'string') {
       if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected string, got ${getType(value)}` });
+        context.errors.push({ path: context.path, message: `Expected string, got ${inspectValue(value)}` });
       }
       return { success: false };
     }
@@ -322,7 +340,7 @@ function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema
   return new Schema((value, context) => {
     if (!Array.isArray(value)) {
       if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected array, got ${getType(value)}` });
+        context.errors.push({ path: context.path, message: `Expected array, got ${inspectValue(value)}` });
       }
       return { success: false };
     }
@@ -366,7 +384,7 @@ function createUndefinedSchema(): Schema<undefined> {
   return new Schema<undefined>((value, context) => {
     if (value !== undefined) {
       if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected undefined, got ${getType(value)}` });
+        context.errors.push({ path: context.path, message: `Expected undefined, got ${inspectValue(value)}` });
       }
       return { success: false };
     }

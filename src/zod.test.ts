@@ -17,17 +17,17 @@ function assertThrows(fn: () => void, messageIncludes?: string): void {
   assert(thrown);
 }
 
-// Test getType function
-Deno.test('getType returns correct type strings', () => {
-  assert(z.getType(undefined) === 'undefined');
-  assert(z.getType(null) === 'null');
-  assert(z.getType([]) === 'array');
-  assert(z.getType([1, 2, 3]) === 'array');
-  assert(z.getType({}) === 'object');
-  assert(z.getType('hello') === 'string');
-  assert(z.getType(123) === 'number');
-  assert(z.getType(true) === 'boolean');
-  assert(z.getType(BigInt(123)) === 'bigint');
+// Test inspectValue function
+Deno.test('inspectValue returns correct type strings', () => {
+  assert(z.inspectValue(undefined) === 'undefined');
+  assert(z.inspectValue(null) === 'null');
+  assert(z.inspectValue([]) === 'array');
+  assert(z.inspectValue([1, 2, 3]) === 'array');
+  assert(z.inspectValue({}) === 'object');
+  assert(z.inspectValue('hello') === 'string "hello"');
+  assert(z.inspectValue(123) === 'number 123');
+  assert(z.inspectValue(true) === 'boolean true');
+  assert(z.inspectValue(BigInt(123)) === 'bigint 123');
 });
 
 // Test string schema
@@ -109,7 +109,7 @@ Deno.test('undefined schema validates undefined', () => {
 Deno.test('literal schema validates exact values', () => {
   const helloSchema = z.literal('hello');
   assert(helloSchema.parse('hello') === 'hello');
-  assertThrows(() => helloSchema.parse('world'), 'Expected literal hello');
+  assertThrows(() => helloSchema.parse('world'), 'Expected literal "hello"');
 
   const numberSchema = z.literal(42);
   assert(numberSchema.parse(42) === 42);
@@ -362,9 +362,9 @@ Deno.test('error paths are correctly reported', () => {
   assert(result.success === false);
   assert(result.errors.length === 2);
   assert(ensure(result.errors[0]).path.join('/') === 'user/age');
-  assert(ensure(result.errors[0]).message === 'Expected number, got string');
+  assert(ensure(result.errors[0]).message === 'Expected number, got string "not a number"');
   assert(ensure(result.errors[1]).path.join('/') === 'items/1/id');
-  assert(ensure(result.errors[1]).message === 'Expected number, got string');
+  assert(ensure(result.errors[1]).message === 'Expected number, got string "two"');
 });
 
 // Test ObjectSchema shape property
@@ -622,7 +622,7 @@ Deno.test('deeply nested error paths', () => {
   assert(result.success === false);
   assert(result.errors.length === 1);
   assert(ensure(result.errors[0]).path.join('/') === 'level1/level2/level3/value');
-  assert(ensure(result.errors[0]).message === 'Expected number, got string');
+  assert(ensure(result.errors[0]).message === 'Expected number, got string "not a number"');
 });
 
 // Test multiple errors in the same object
@@ -775,7 +775,7 @@ Deno.test('literal with various types', () => {
   // String literal
   const stringLiteral = z.literal('exact');
   assert(stringLiteral.parse('exact') === 'exact');
-  assertThrows(() => stringLiteral.parse('EXACT'), 'Expected literal exact');
+  assertThrows(() => stringLiteral.parse('EXACT'), 'Expected literal "exact"');
 
   // Number literal
   const zeroLiteral = z.literal(0);
@@ -837,8 +837,8 @@ Deno.test('safeParse always provides detailed errors', () => {
   assert(result.success === false);
   assert(result.errors.length === 1);
   assert(ensure(result.errors[0]).path.length === 0); // Root level error
-  assert(ensure(result.errors[0]).message === 'Expected object, got string');
+  assert(ensure(result.errors[0]).message === 'Expected object, got string "not an object"');
 
   // The message should summarize all errors
-  assert(result.message === 'Validation failed: Expected object, got string (at path /)');
+  assert(result.message === 'Validation failed: Expected object, got string "not an object" (at path /)');
 });
