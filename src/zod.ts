@@ -207,6 +207,48 @@ function createDateSchema(): Schema<Date> {
   return createInstanceofSchema<Date>(Date);
 }
 
+function createDiscrimatedUnionSchema<B extends string, T extends Record<B, unknown>[]>(
+  discriminator: B,
+  schemas: { [K in keyof T]: ObjectSchema<T[K]> },
+): Schema<T[number]> {
+  return new Schema<T[number]>((value, context) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      if (context !== undefined) {
+        context.errors.push({
+          path: context.path,
+          message: `Expected object, got ${inspectValue(value)}`,
+        });
+      }
+      return { success: false };
+    }
+    const object = value as Record<string, unknown>;
+    const discriminatorValue = object[discriminator];
+    const discriminatedSchemas = schemas.filter((schema) => {
+      return schema.shape[discriminator].safeParse(discriminatorValue).success;
+    });
+    if (discriminatedSchemas.length > 1) {
+      if (context !== undefined) {
+        context.errors.push({
+          path: [...context.path, discriminator],
+          message: `Ambiguous discriminator value ${inspectValue(discriminatorValue)}`,
+        });
+      }
+      return { success: false };
+    }
+    const discriminatedSchema = discriminatedSchemas[0];
+    if (discriminatedSchema === undefined) {
+      if (context !== undefined) {
+        context.errors.push({
+          path: [...context.path, discriminator],
+          message: `Invalid discriminator value ${inspectValue(discriminatorValue)}`,
+        });
+      }
+      return { success: false };
+    }
+    return discriminatedSchema.internalSafeParse(value, context);
+  });
+}
+
 // deno-lint-ignore no-explicit-any
 function createInstanceofSchema<T>(schema: { new (...args: any[]): T }): Schema<T> {
   return new Schema<T>((value, context) => {
@@ -420,6 +462,7 @@ export {
   createBigIntSchema as bigint,
   createBooleanSchema as boolean,
   createDateSchema as date,
+  createDiscrimatedUnionSchema as discriminatedUnion,
   createInstanceofSchema as instanceof,
   createLazySchema as lazy,
   createLiteralSchema as literal,

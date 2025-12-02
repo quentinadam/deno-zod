@@ -842,3 +842,132 @@ Deno.test('safeParse always provides detailed errors', () => {
   // The message should summarize all errors
   assert(result.message === 'Validation failed: Expected object, got string "not an object" (at path /)');
 });
+
+// Test discriminated union basic functionality
+Deno.test('discriminated union schema validates by discriminator', () => {
+  const circleSchema = z.object({
+    kind: z.literal('circle'),
+    radius: z.number(),
+  });
+
+  const squareSchema = z.object({
+    kind: z.literal('square'),
+    size: z.number(),
+  });
+
+  const shapeSchema = z.discriminatedUnion('kind', [circleSchema, squareSchema]);
+
+  const circle = shapeSchema.parse({ kind: 'circle', radius: 10 });
+  assert(circle.kind === 'circle');
+  assert(circle.radius === 10);
+
+  const square = shapeSchema.parse({ kind: 'square', size: 5 });
+  assert(square.kind === 'square');
+  assert(square.size === 5);
+
+  // Extra fields should still be allowed because underlying object schemas are non-strict
+  const circleWithExtra = shapeSchema.parse({ kind: 'circle', radius: 3, extra: 'ignored' });
+  assert(circleWithExtra.kind === 'circle');
+  assert(circleWithExtra.radius === 3);
+});
+
+// Test discriminated union rejects non-object values
+Deno.test('discriminated union schema rejects non-objects', () => {
+  const aSchema = z.object({
+    type: z.literal('a'),
+    value: z.number(),
+  });
+
+  const bSchema = z.object({
+    type: z.literal('b'),
+    flag: z.boolean(),
+  });
+
+  const unionSchema = z.discriminatedUnion('type', [aSchema, bSchema]);
+
+  assertThrows(() => unionSchema.parse('not an object'), 'Expected object, got string "not an object"');
+  assertThrows(() => unionSchema.parse(null), 'Expected object, got null');
+  assertThrows(() => unionSchema.parse([]), 'Expected object, got array');
+});
+
+// Test discriminated union with invalid discriminator value
+Deno.test('discriminated union schema reports invalid discriminator value', () => {
+  const aSchema = z.object({
+    type: z.literal('a'),
+    value: z.number(),
+  });
+
+  const bSchema = z.object({
+    type: z.literal('b'),
+    flag: z.boolean(),
+  });
+
+  const unionSchema = z.discriminatedUnion('type', [aSchema, bSchema]);
+
+  const invalidData = { type: 'c', value: 123 };
+
+  const result = unionSchema.safeParse(invalidData);
+  assert(result.success === false);
+  assert(result.errors.length === 1);
+  assert(ensure(result.errors[0]).path.join('/') === 'type');
+  assert(ensure(result.errors[0]).message === 'Invalid discriminator value string "c"');
+
+  assertThrows(() => unionSchema.parse(invalidData), 'Invalid discriminator value string "c"');
+});
+
+// Test discriminated union still validates inner schema fields
+Deno.test('discriminated union schema validates inner fields of matched branch', () => {
+  const circleSchema = z.object({
+    kind: z.literal('circle'),
+    radius: z.number(),
+  });
+
+  const squareSchema = z.object({
+    kind: z.literal('square'),
+    size: z.number(),
+  });
+
+  const shapeSchema = z.discriminatedUnion('kind', [circleSchema, squareSchema]);
+
+  const invalidCircle = {
+    kind: 'circle',
+    radius: 'not a number',
+  };
+
+  const result = shapeSchema.safeParse(invalidCircle);
+  assert(result.success === false);
+  assert(result.errors.length === 1);
+  assert(ensure(result.errors[0]).path.join('/') === 'radius');
+  assert(ensure(result.errors[0]).message === 'Expected number, got string "not a number"');
+
+  assertThrows(() => shapeSchema.parse(invalidCircle), 'Expected number, got string "not a number"');
+});
+
+// Test discriminated union ambiguous discriminator value
+Deno.test('discriminated union schema reports ambiguous discriminator values', () => {
+  const firstSchema = z.object({
+    tag: z.literal('same'),
+    value: z.number(),
+  });
+
+  const secondSchema = z.object({
+    tag: z.literal('same'),
+    other: z.string(),
+  });
+
+  const unionSchema = z.discriminatedUnion('tag', [firstSchema, secondSchema]);
+
+  const ambiguousData = {
+    tag: 'same',
+    value: 1,
+    other: 'two',
+  };
+
+  const result = unionSchema.safeParse(ambiguousData);
+  assert(result.success === false);
+  assert(result.errors.length === 1);
+  assert(ensure(result.errors[0]).path.join('/') === 'tag');
+  assert(ensure(result.errors[0]).message === 'Ambiguous discriminator value string "same"');
+
+  assertThrows(() => unionSchema.parse(ambiguousData), 'Ambiguous discriminator value string "same"');
+});
