@@ -1,6 +1,6 @@
 {
   "name": "@quentinadam/zod",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "A simple library to parse data, inspired by zod",
   "license": "MIT",
   "author": "Quentin Adam",
@@ -18,8 +18,8 @@
     "noImplicitReturns": true
   },
   "imports": {
-    "@quentinadam/assert": "jsr:@quentinadam/assert@^0.1.12",
-    "@quentinadam/ensure": "jsr:@quentinadam/ensure@^0.1.1",
+    "@quentinadam/assert": "jsr:@quentinadam/assert@^0.1.13",
+    "@quentinadam/ensure": "jsr:@quentinadam/ensure@^0.1.2",
     "typescript": "npm:typescript@^5.9.3"
   }
 }
