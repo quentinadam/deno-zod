@@ -18,8 +18,8 @@
     "noImplicitReturns": true
   },
   "imports": {
-    "@quentinadam/assert": "jsr:@quentinadam/assert@^0.1.13",
-    "@quentinadam/ensure": "jsr:@quentinadam/ensure@^0.1.2",
+    "@quentinadam/assert": "jsr:@quentinadam/assert@^0.1.15",
+    "@quentinadam/ensure": "jsr:@quentinadam/ensure@^0.1.3",
     "typescript": "npm:typescript@^5.9.3"
   }
 }
