@@ -1,6 +1,6 @@
-import assert from '@quentinadam/assert';
-import ensure from '@quentinadam/ensure';
-import * as z from './zod.ts';
+import { assert } from '@quentinadam/assert';
+import { ensure } from '@quentinadam/ensure';
+import * as z from './mod.ts';
 
 // Helper function to assert that a function throws
 function assertThrows(fn: () => void, messageIncludes?: string): void {
