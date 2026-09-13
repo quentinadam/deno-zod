@@ -125,6 +125,13 @@ Deno.test('literal schema validates exact values', () => {
   assert(enumSchema.parse('green') === 'green');
   assert(enumSchema.parse('blue') === 'blue');
   assertThrows(() => enumSchema.parse('yellow'));
+
+  // Test readonly tuple of literals (as const)
+  const COLORS = ['red', 'green', 'blue'] as const;
+  const constEnumSchema = z.literal(COLORS);
+  const color: 'red' | 'green' | 'blue' = constEnumSchema.parse('green');
+  assert(color === 'green');
+  assertThrows(() => constEnumSchema.parse('yellow'));
 });
 
 // Test array schema

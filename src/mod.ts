@@ -269,8 +269,14 @@ function createLazySchema<T>(fn: () => Schema<T>): Schema<T> {
   return new Schema((value, context) => fn().internalSafeParse(value, context));
 }
 
-function createLiteralSchema<T extends string | number | boolean | null | undefined>(literal: T | T[]): Schema<T> {
-  if (Array.isArray(literal)) {
+function isReadonlyArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
+
+function createLiteralSchema<T extends string | number | boolean | null | undefined>(
+  literal: T | readonly T[],
+): Schema<T> {
+  if (isReadonlyArray(literal)) {
     return createUnionSchema(literal.map((item) => createLiteralSchema(item)));
   }
   return new Schema<T>((value, context) => {
