@@ -2,19 +2,20 @@ import { assert } from '@quentinadam/assert';
 import { ensure } from '@quentinadam/ensure';
 import * as z from './mod.ts';
 
-// Helper function to assert that a function throws
-function assertThrows(fn: () => void, messageIncludes?: string): void {
-  let thrown = false;
+// Helper function to assert that a function throws, returning what it threw
+function assertThrows(fn: () => void, messageIncludes?: string): unknown {
+  let thrown: { error: unknown } | undefined;
   try {
     fn();
   } catch (error) {
-    thrown = true;
+    thrown = { error };
     if (messageIncludes) {
       assert(error instanceof Error);
       assert(error.message.includes(messageIncludes));
     }
   }
-  assert(thrown);
+  assert(thrown !== undefined);
+  return thrown.error;
 }
 
 // Test inspectValue function
@@ -157,7 +158,7 @@ Deno.test('tuple schema validates tuples', () => {
 
   assertThrows(() => schema.parse(['hello', 42]), 'Expected array of length 3, got array of length 2');
   assertThrows(() => schema.parse(['hello', '42', true]), 'Expected number, got string');
-  assertThrows(() => schema.parse('not an array'), 'Expected array, got string');
+  assertThrows(() => schema.parse('not an array'), 'Expected array of length 3, got string');
 });
 
 // Test object schema
@@ -222,8 +223,8 @@ Deno.test('union schema validates multiple types', () => {
   assert(schema.parse('hello') === 'hello');
   assert(schema.parse(123) === 123);
 
-  assertThrows(() => schema.parse(true), 'Validation failed');
-  assertThrows(() => schema.parse(null), 'Validation failed');
+  assertThrows(() => schema.parse(true), 'Expected string | number, got boolean true');
+  assertThrows(() => schema.parse(null), 'Expected string | number, got null');
 });
 
 // Test date schema
@@ -272,8 +273,8 @@ Deno.test('optional method makes schemas optional', () => {
   assert(schema.parse('hello') === 'hello');
   assert(schema.parse(undefined) === undefined);
 
-  assertThrows(() => schema.parse(null), 'Validation failed');
-  assertThrows(() => schema.parse(123), 'Validation failed');
+  assertThrows(() => schema.parse(null), 'Expected undefined | string, got null');
+  assertThrows(() => schema.parse(123), 'Expected undefined | string, got number 123');
 });
 
 // Test nullable method
@@ -283,8 +284,8 @@ Deno.test('nullable method makes schemas nullable', () => {
   assert(schema.parse('hello') === 'hello');
   assert(schema.parse(null) === null);
 
-  assertThrows(() => schema.parse(undefined), 'Validation failed');
-  assertThrows(() => schema.parse(123), 'Validation failed');
+  assertThrows(() => schema.parse(undefined), 'Expected null | string, got undefined');
+  assertThrows(() => schema.parse(123), 'Expected null | string, got number 123');
 });
 
 // Test transform method
@@ -492,14 +493,14 @@ Deno.test('nullable function creates nullable schemas', () => {
   assert(schema.parse('hello') === 'hello');
   assert(schema.parse(null) === null);
 
-  assertThrows(() => schema.parse(undefined), 'Validation failed');
-  assertThrows(() => schema.parse(123), 'Validation failed');
+  assertThrows(() => schema.parse(undefined), 'Expected null | string, got undefined');
+  assertThrows(() => schema.parse(123), 'Expected null | string, got number 123');
 
   // Test with other types
   const numberSchema = z.nullable(z.number());
   assert(numberSchema.parse(42) === 42);
   assert(numberSchema.parse(null) === null);
-  assertThrows(() => numberSchema.parse('42'), 'Validation failed');
+  assertThrows(() => numberSchema.parse('42'), 'Expected null | number, got string "42"');
 });
 
 // Test nullish function (creates nullable and optional schemas)
@@ -510,8 +511,8 @@ Deno.test('nullish function creates nullable and optional schemas', () => {
   assert(schema.parse(null) === null);
   assert(schema.parse(undefined) === undefined);
 
-  assertThrows(() => schema.parse(123), 'Validation failed');
-  assertThrows(() => schema.parse(true), 'Validation failed');
+  assertThrows(() => schema.parse(123), 'Expected null | undefined | string, got number 123');
+  assertThrows(() => schema.parse(true), 'Expected null | undefined | string, got boolean true');
 
   // Test with other types
   const objectSchema = z.nullish(z.object({ id: z.number() }));
@@ -529,14 +530,14 @@ Deno.test('combining nullable, nullish, and optional methods', () => {
   assert(nullableOptional.parse('hello') === 'hello');
   assert(nullableOptional.parse(null) === null);
   assert(nullableOptional.parse(undefined) === undefined);
-  assertThrows(() => nullableOptional.parse(123), 'Validation failed');
+  assertThrows(() => nullableOptional.parse(123), 'Expected undefined | null | string, got number 123');
 
   // optional then nullable
   const optionalNullable = z.string().optional().nullable();
   assert(optionalNullable.parse('hello') === 'hello');
   assert(optionalNullable.parse(null) === null);
   assert(optionalNullable.parse(undefined) === undefined);
-  assertThrows(() => optionalNullable.parse(123), 'Validation failed');
+  assertThrows(() => optionalNullable.parse(123), 'Expected null | undefined | string, got number 123');
 
   // Using nullish is equivalent to nullable().optional()
   const nullishSchema = z.nullish(z.string());
@@ -568,7 +569,7 @@ Deno.test('nullable schema works with transform', () => {
   assert(schema.parse(5) === 10);
   assert(schema.parse(null) === null);
 
-  assertThrows(() => schema.parse('5'), 'Validation failed');
+  assertThrows(() => schema.parse('5'), 'Expected null | number, got string "5"');
 });
 
 // Test nullish with transform
@@ -579,7 +580,7 @@ Deno.test('nullish schema works with transform', () => {
   assert(schema.parse(null) === null);
   assert(schema.parse(undefined) === undefined);
 
-  assertThrows(() => schema.parse(123), 'Validation failed');
+  assertThrows(() => schema.parse(123), 'Expected null | undefined | string, got number 123');
 });
 
 // Test empty object validation
@@ -686,8 +687,8 @@ Deno.test('union with multiple types', () => {
   assert(schema.parse(true) === true);
   assert(schema.parse(null) === null);
 
-  assertThrows(() => schema.parse(undefined), 'Validation failed');
-  assertThrows(() => schema.parse([]), 'Validation failed');
+  assertThrows(() => schema.parse(undefined), 'Expected string | number | boolean | null, got undefined');
+  assertThrows(() => schema.parse([]), 'Expected string | number | boolean | null, got array');
 });
 
 // Test record with complex value types
@@ -717,7 +718,7 @@ Deno.test('array of unions', () => {
   assert(result[0] === 'hello');
   assert(result[1] === 123);
 
-  assertThrows(() => schema.parse(['hello', true]), 'Validation failed');
+  assertThrows(() => schema.parse(['hello', true]), 'Expected string | number, got boolean true at [1]');
 });
 
 // Test optional in objects
@@ -847,7 +848,7 @@ Deno.test('safeParse always provides detailed errors', () => {
   assert(ensure(result.errors[0]).message === 'Expected object, got string "not an object"');
 
   // The message should summarize all errors
-  assert(result.message === 'Validation failed: Expected object, got string "not an object" (at path /)');
+  assert(result.message === 'Expected object, got string "not an object"');
 });
 
 // Test discriminated union basic functionality
@@ -977,4 +978,130 @@ Deno.test('discriminated union schema reports ambiguous discriminator values', (
   assert(ensure(result.errors[0]).message === 'Ambiguous discriminator value string "same"');
 
   assertThrows(() => unionSchema.parse(ambiguousData), 'Ambiguous discriminator value string "same"');
+});
+
+// Test path formatting
+Deno.test('formatPath formats paths in JavaScript notation', () => {
+  assert(z.formatPath([]) === '');
+  assert(z.formatPath(['user']) === 'user');
+  assert(z.formatPath(['user', 'addresses', 0, 'city']) === 'user.addresses[0].city');
+  assert(z.formatPath(['headers', 'content-type']) === 'headers["content-type"]');
+  assert(z.formatPath([0, 'id']) === '[0].id');
+  assert(z.formatPath(['']) === '[""]');
+  assert(z.formatPath(['0']) === '["0"]');
+});
+
+// Test error message formatting
+Deno.test('error messages state the path in JavaScript notation', () => {
+  const schema = z.object({ user: z.object({ addresses: z.array(z.object({ city: z.string() })) }) });
+
+  const result = schema.safeParse({ user: { addresses: [{ city: 1 }] } });
+  assert(result.success === false);
+  assert(result.message === 'Expected string, got number 1 at user.addresses[0].city');
+
+  const rootResult = z.string().safeParse(1);
+  assert(rootResult.success === false);
+  assert(rootResult.message === 'Expected string, got number 1');
+});
+
+// Test that several errors are listed one per line
+Deno.test('several errors are listed one per line', () => {
+  const result = z.object({ a: z.string(), b: z.number() }).safeParse({ a: 1, b: 'two' });
+  assert(result.success === false);
+  assert(
+    result.message === [
+      'Validation failed:',
+      '- Expected string, got number 1 at a',
+      '- Expected number, got string "two" at b',
+    ].join('\n'),
+  );
+});
+
+// Test ParseError
+Deno.test('parse throws a ParseError carrying the errors', () => {
+  const schema = z.object({ a: z.string() });
+
+  const thrown = assertThrows(() => schema.parse({ a: 1 }));
+  assert(thrown instanceof z.ParseError);
+  assert(thrown instanceof Error);
+  assert(thrown.name === 'ParseError');
+  assert(thrown.message === 'Expected string, got number 1 at a');
+  assert(thrown.errors.length === 1);
+  assert(ensure(thrown.errors[0]).path.join('/') === 'a');
+  assert(ensure(thrown.errors[0]).message === 'Expected string, got number 1');
+});
+
+// Test union summary error
+Deno.test('union reports one error listing its members', () => {
+  const result = z.union([z.string(), z.number(), z.object({ a: z.string() })]).safeParse(true);
+  assert(result.success === false);
+  assert(result.errors.length === 1);
+  assert(ensure(result.errors[0]).path.length === 0);
+  assert(result.message === 'Expected string | number | object, got boolean true');
+});
+
+// Test union reporting the errors of the only member the value could have been meant for
+Deno.test('union reports the errors of its single applicable member', () => {
+  const objectResult = z.union([z.object({ a: z.string() }), z.string()]).safeParse({ a: 1 });
+  assert(objectResult.success === false);
+  assert(objectResult.errors.length === 1);
+  assert(ensure(objectResult.errors[0]).path.join('/') === 'a');
+  assert(ensure(objectResult.errors[0]).message === 'Expected string, got number 1');
+  assert(objectResult.message === 'Expected string, got number 1 at a');
+
+  const transformSchema = z.union([
+    z.date(),
+    z.string().transform((value) => {
+      assert(/^\d{4}-\d{2}-\d{2}$/.test(value), `Invalid date string: ${value}`);
+      return new Date(value);
+    }),
+  ]);
+  const transformResult = transformSchema.safeParse('not a date');
+  assert(transformResult.success === false);
+  assert(transformResult.errors.length === 1);
+  assert(transformResult.message === 'Invalid date string: not a date');
+
+  // Two members applied and failed inside, so neither set of errors is the one to report
+  const ambiguousResult = z.union([z.object({ a: z.string() }), z.object({ b: z.string() })]).safeParse({});
+  assert(ambiguousResult.success === false);
+  assert(ambiguousResult.errors.length === 1);
+  assert(ambiguousResult.message === 'Expected object, got object');
+});
+
+// Test describe
+Deno.test('describe names what a schema accepts', () => {
+  const schema = z.string().transform((value) => {
+    assert(/^[A-Z]{2}\d{2}[A-Z0-9]+$/.test(value), 'Invalid IBAN');
+    return value;
+  }).describe('IBAN');
+
+  assert(schema.description === 'IBAN');
+  assert(schema.parse('DE02120300000000202051') === 'DE02120300000000202051');
+
+  const ownResult = schema.safeParse(1);
+  assert(ownResult.success === false);
+  assert(ownResult.message === 'Expected IBAN, got number 1');
+
+  const unionResult = z.union([schema, z.null()]).safeParse(1);
+  assert(unionResult.success === false);
+  assert(unionResult.message === 'Expected IBAN | null, got number 1');
+});
+
+// Test that a schema deferring to another does not report over its message
+Deno.test('lazy schema reports the failure of the schema it defers to once', () => {
+  type Tree = { value: number; children: Tree[] };
+  const TreeSchema: z.Schema<Tree> = z.lazy(() => z.object({ value: z.number(), children: z.array(TreeSchema) }));
+
+  const result = TreeSchema.safeParse(5);
+  assert(result.success === false);
+  assert(result.errors.length === 1);
+  assert(result.message === 'Expected object, got number 5');
+});
+
+// Test that a transform does not report what its schema rejected twice
+Deno.test('transform reports the failure of the schema it wraps once', () => {
+  const result = z.object({ a: z.string() }).transform((value) => value).safeParse({ a: 1 });
+  assert(result.success === false);
+  assert(result.errors.length === 1);
+  assert(result.message === 'Expected string, got number 1 at a');
 });

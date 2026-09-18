@@ -1,6 +1,15 @@
 type Path = (string | number)[];
-type Context = { path: Path; errors: { path: Path; message: string }[] };
-type Result<T> = { success: true; data: T } | { success: false };
+type ValidationError = { path: Path; message: string };
+type Context = { path: Path; errors: ValidationError[] };
+/**
+ * `mismatch` marks a failure raised because the schema does not accept this kind of value at all, as opposed to one
+ * raised over the value's contents. It is what lets a union tell a member that cannot apply from one that applied.
+ */
+type Result<T> = { success: true; data: T } | { success: false; mismatch?: true };
+/** Deferred where building it costs more than the schema itself, as a union's and a literal's do. */
+type Description = string | (() => string);
+
+const IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 export function inspectValue(value: unknown): string {
   if (value === undefined) return 'undefined';
@@ -21,11 +30,67 @@ export function inspectValue(value: unknown): string {
   return typeof value;
 }
 
-export class Schema<T> {
-  protected readonly safeParseFn: (value: unknown, context?: Context) => Result<T>;
+/** Formats a path in JavaScript notation, e.g. `user.addresses[0].city` or `headers["content-type"]`. */
+export function formatPath(path: readonly (string | number)[]): string {
+  return path.map((segment, index) => {
+    if (typeof segment === 'number') {
+      return `[${segment}]`;
+    }
+    if (IDENTIFIER_PATTERN.test(segment)) {
+      return index === 0 ? segment : `.${segment}`;
+    }
+    return `[${JSON.stringify(segment)}]`;
+  }).join('');
+}
 
-  constructor(safeParseFn: (value: unknown, context?: Context) => Result<T>) {
-    this.safeParseFn = safeParseFn;
+function formatErrors(errors: readonly ValidationError[]) {
+  const lines = errors.map(({ path, message }) => {
+    const formattedPath = formatPath(path);
+    return formattedPath === '' ? message : `${message} at ${formattedPath}`;
+  });
+  const [first] = lines;
+  if (first === undefined) {
+    return 'Validation failed';
+  }
+  if (lines.length === 1) {
+    return first;
+  }
+  return ['Validation failed:', ...lines.map((line) => `- ${line}`)].join('\n');
+}
+
+export class ParseError extends Error {
+  readonly errors: ValidationError[];
+
+  constructor(message: string, errors: ValidationError[]) {
+    super(message);
+    this.name = 'ParseError';
+    this.errors = errors;
+  }
+}
+
+function reportError(context: Context | undefined, message: string) {
+  if (context !== undefined) {
+    context.errors.push({ path: context.path, message });
+  }
+}
+
+export class Schema<T> {
+  readonly #safeParseFn: (value: unknown, context?: Context) => Result<T>;
+  readonly #description: Description;
+
+  constructor(safeParseFn: (value: unknown, context?: Context) => Result<T>, description: Description = 'value') {
+    this.#safeParseFn = safeParseFn;
+    this.#description = description;
+  }
+
+  /** How the schema names what it accepts, as `Expected …, got …` and a union listing its members both do. */
+  get description(): string {
+    return typeof this.#description === 'string' ? this.#description : this.#description();
+  }
+
+  /** Renames the schema in its own message and where a union lists its members. */
+  describe(description: string): Schema<T> {
+    return new Schema(this.#safeParseFn, description);
   }
 
   parse(value: unknown): T {
@@ -33,45 +98,51 @@ export class Schema<T> {
     if (result.success) {
       return result.data;
     }
-    throw new Error(result.message);
+    throw new ParseError(result.message, result.errors);
   }
 
   safeParse(value: unknown):
     | { success: true; data: T }
-    | { success: false; message: string; errors: { path: Path; message: string }[] } {
+    | { success: false; message: string; errors: ValidationError[] } {
     const context: Context = { path: [], errors: [] };
-    const result = this.safeParseFn(value, context);
+    const result = this.internalSafeParse(value, context);
     if (result.success) {
       return result;
     }
-    return {
-      success: false,
-      message: `Validation failed: ${
-        context.errors.map((e) => `${e.message} (at path /${e.path.join('/')})`).join(', ')
-      }`,
-      errors: context.errors,
-    };
+    return { success: false, message: formatErrors(context.errors), errors: context.errors };
   }
 
   internalSafeParse(value: unknown, context?: Context): Result<T> {
-    return this.safeParseFn(value, context);
+    if (context === undefined) {
+      return this.#safeParseFn(value);
+    }
+    // Mismatches are reported here rather than by each schema, so the message names the schema as it is described
+    // now. `lazy` propagates the mismatch of the schema it defers to, which has already recorded a better message,
+    // so report only where nothing below did.
+    const errorCount = context.errors.length;
+    const result = this.#safeParseFn(value, context);
+    if (!result.success && result.mismatch === true && context.errors.length === errorCount) {
+      reportError(context, `Expected ${this.description}, got ${inspectValue(value)}`);
+    }
+    return result;
   }
 
   transform<U>(transform: (value: T) => U): Schema<U> {
-    return new Schema((value, context): { success: true; data: U } | { success: false } => {
+    return new Schema((value, context): Result<U> => {
       try {
-        const result = this.internalSafeParse(value, context);
+        const result = this.internalSafeParse(value);
         if (result.success) {
           return { success: true, data: transform(result.data) };
         }
+        if (result.mismatch !== true) {
+          this.internalSafeParse(value, context);
+        }
         return result;
       } catch (error) {
-        if (context !== undefined) {
-          context.errors.push({ path: context.path, message: error instanceof Error ? error.message : String(error) });
-        }
+        reportError(context, error instanceof Error ? error.message : String(error));
         return { success: false };
       }
-    });
+    }, this.#description);
   }
 
   optional(): Schema<T | undefined> {
@@ -96,24 +167,20 @@ export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
 
   constructor(schema: { [K in keyof T]: Schema<T[K]> }, strict = false) {
     super((value, context) => {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        if (context !== undefined) {
-          context.errors.push({ path: context.path, message: `Expected object, got ${inspectValue(value)}` });
-        }
-        return { success: false };
+      if (!isPlainObject(value)) {
+        return { success: false, mismatch: true };
       }
-      const object = value as Record<string, unknown>;
       const result = (() => {
         const parsedObject: Record<string, unknown> = {};
         for (const [key, valueSchema] of Object.entries<Schema<unknown>>(schema)) {
-          const result = valueSchema.internalSafeParse(object[key]);
+          const result = valueSchema.internalSafeParse(value[key]);
           if (!result.success) {
             return result;
           }
           parsedObject[key] = result.data;
         }
         if (strict) {
-          for (const key of Object.keys(object)) {
+          for (const key of Object.keys(value)) {
             if (!(key in schema)) {
               return { success: false as const };
             }
@@ -126,33 +193,39 @@ export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
       }
       if (context !== undefined) {
         for (const [key, valueSchema] of Object.entries(schema)) {
-          valueSchema.internalSafeParse(object[key], { path: [...context.path, key], errors: context.errors });
+          valueSchema.internalSafeParse(value[key], { path: [...context.path, key], errors: context.errors });
         }
         if (strict) {
-          const unrecognizedKeys = new Array<string>();
-          for (const key of Object.keys(object)) {
-            if (!(key in schema)) {
-              unrecognizedKeys.push(key);
-            }
-          }
+          const unrecognizedKeys = Object.keys(value).filter((key) => !(key in schema));
           if (unrecognizedKeys.length > 0) {
-            context.errors.push({ path: context.path, message: `Unrecognized keys: ${unrecognizedKeys.join(', ')}` });
+            reportError(context, `Unrecognized keys: ${unrecognizedKeys.join(', ')}`);
           }
         }
       }
       return { success: false };
-    });
+    }, 'object');
     this.#schema = schema;
   }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A schema that accepts whatever its guard accepts, which is every schema whose contents it does not then parse. */
+function createTypeSchema<T>(description: Description, accepts: (value: unknown) => value is T): Schema<T> {
+  return new Schema<T>((value) => {
+    if (!accepts(value)) {
+      return { success: false, mismatch: true };
+    }
+    return { success: true, data: value };
+  }, description);
 }
 
 function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
   return new Schema((value, context) => {
     if (!Array.isArray(value)) {
-      if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected array, got ${inspectValue(value)}` });
-      }
-      return { success: false };
+      return { success: false, mismatch: true };
     }
     const result = (() => {
       const parsedItems = new Array<T>();
@@ -176,31 +249,15 @@ function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
       }
     }
     return { success: false };
-  });
+  }, 'array');
 }
 
 function createBigIntSchema(): Schema<bigint> {
-  return new Schema<bigint>((value, context) => {
-    if (typeof value !== 'bigint') {
-      if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected bigint, got ${inspectValue(value)}` });
-      }
-      return { success: false };
-    }
-    return { success: true, data: value };
-  });
+  return createTypeSchema('bigint', (value) => typeof value === 'bigint');
 }
 
 function createBooleanSchema(): Schema<boolean> {
-  return new Schema<boolean>((value, context) => {
-    if (typeof value !== 'boolean') {
-      if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected boolean, got ${inspectValue(value)}` });
-      }
-      return { success: false };
-    }
-    return { success: true, data: value };
-  });
+  return createTypeSchema('boolean', (value) => typeof value === 'boolean');
 }
 
 function createDateSchema(): Schema<Date> {
@@ -212,57 +269,29 @@ function createDiscrimatedUnionSchema<B extends string, T extends Record<B, unkn
   schemas: { [K in keyof T]: ObjectSchema<T[K]> },
 ): Schema<T[number]> {
   return new Schema<T[number]>((value, context) => {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      if (context !== undefined) {
-        context.errors.push({
-          path: context.path,
-          message: `Expected object, got ${inspectValue(value)}`,
-        });
-      }
-      return { success: false };
+    if (!isPlainObject(value)) {
+      return { success: false, mismatch: true };
     }
-    const object = value as Record<string, unknown>;
-    const discriminatorValue = object[discriminator];
+    const discriminatorValue = value[discriminator];
     const discriminatedSchemas = schemas.filter((schema) => {
-      return schema.shape[discriminator].safeParse(discriminatorValue).success;
+      return schema.shape[discriminator].internalSafeParse(discriminatorValue).success;
     });
-    if (discriminatedSchemas.length > 1) {
-      if (context !== undefined) {
-        context.errors.push({
-          path: [...context.path, discriminator],
-          message: `Ambiguous discriminator value ${inspectValue(discriminatorValue)}`,
-        });
-      }
-      return { success: false };
-    }
-    const discriminatedSchema = discriminatedSchemas[0];
-    if (discriminatedSchema === undefined) {
-      if (context !== undefined) {
-        context.errors.push({
-          path: [...context.path, discriminator],
-          message: `Invalid discriminator value ${inspectValue(discriminatorValue)}`,
-        });
-      }
+    const [discriminatedSchema, ...ambiguousSchemas] = discriminatedSchemas;
+    if (discriminatedSchema === undefined || ambiguousSchemas.length > 0) {
+      const qualifier = discriminatedSchema === undefined ? 'Invalid' : 'Ambiguous';
+      reportError(
+        context === undefined ? undefined : { path: [...context.path, discriminator], errors: context.errors },
+        `${qualifier} discriminator value ${inspectValue(discriminatorValue)}`,
+      );
       return { success: false };
     }
     return discriminatedSchema.internalSafeParse(value, context);
-  });
+  }, 'object');
 }
 
 // deno-lint-ignore no-explicit-any
 function createInstanceofSchema<T>(schema: { new (...args: any[]): T }): Schema<T> {
-  return new Schema<T>((value, context) => {
-    if (!(value instanceof schema)) {
-      if (context !== undefined) {
-        context.errors.push({
-          path: context.path,
-          message: `Expected instance of ${schema.name}, got ${inspectValue(value)}`,
-        });
-      }
-      return { success: false };
-    }
-    return { success: true, data: value };
-  });
+  return createTypeSchema(`instance of ${schema.name}`, (value): value is T => value instanceof schema);
 }
 
 function createLazySchema<T>(fn: () => Schema<T>): Schema<T> {
@@ -279,18 +308,10 @@ function createLiteralSchema<T extends string | number | boolean | null | undefi
   if (isReadonlyArray(literal)) {
     return createUnionSchema(literal.map((item) => createLiteralSchema(item)));
   }
-  return new Schema<T>((value, context) => {
-    if (value !== literal) {
-      if (context !== undefined) {
-        context.errors.push({
-          path: context.path,
-          message: `Expected literal ${JSON.stringify(literal)}, got ${inspectValue(value)}`,
-        });
-      }
-      return { success: false };
-    }
-    return { success: true, data: literal };
-  });
+  return createTypeSchema(
+    () => `literal ${JSON.stringify(literal)}`,
+    (value): value is T => value === literal,
+  );
 }
 
 function createObjectSchema<T extends Record<string, unknown>>(
@@ -312,36 +333,17 @@ function createNullishSchema<T>(schema: Schema<T>): Schema<T | null | undefined>
 }
 
 function createNullSchema(): Schema<null> {
-  return new Schema<null>((value, context) => {
-    if (value !== null) {
-      if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected null, got ${inspectValue(value)}` });
-      }
-      return { success: false };
-    }
-    return { success: true, data: value };
-  });
+  return createTypeSchema('null', (value): value is null => value === null);
 }
 
 function createNumberSchema(): Schema<number> {
-  return new Schema<number>((value, context) => {
-    if (typeof value !== 'number') {
-      if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected number, got ${inspectValue(value)}` });
-      }
-      return { success: false };
-    }
-    return { success: true, data: value };
-  });
+  return createTypeSchema('number', (value) => typeof value === 'number');
 }
 
 function createRecordSchema<T>(schema: Schema<T>): Schema<Record<string, T>> {
   return new Schema<Record<string, T>>((record, context) => {
-    if (typeof record !== 'object' || record === null || Array.isArray(record)) {
-      if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected object, got ${inspectValue(record)}` });
-      }
-      return { success: false };
+    if (!isPlainObject(record)) {
+      return { success: false, mismatch: true };
     }
     const result = (() => {
       const parsedObject: Record<string, T> = {};
@@ -363,7 +365,7 @@ function createRecordSchema<T>(schema: Schema<T>): Schema<Record<string, T>> {
       }
     }
     return { success: false };
-  });
+  }, 'object');
 }
 
 function createStrictObjectSchema<T extends Record<string, unknown>>(
@@ -373,32 +375,17 @@ function createStrictObjectSchema<T extends Record<string, unknown>>(
 }
 
 function createStringSchema(): Schema<string> {
-  return new Schema<string>((value, context) => {
-    if (typeof value !== 'string') {
-      if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected string, got ${inspectValue(value)}` });
-      }
-      return { success: false };
-    }
-    return { success: true, data: value };
-  });
+  return createTypeSchema('string', (value) => typeof value === 'string');
 }
 
 function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema<T[K]> }): Schema<T> {
+  const description = `array of length ${schema.length}`;
   return new Schema((value, context) => {
     if (!Array.isArray(value)) {
-      if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected array, got ${inspectValue(value)}` });
-      }
-      return { success: false };
+      return { success: false, mismatch: true };
     }
     if (value.length !== schema.length) {
-      if (context !== undefined) {
-        context.errors.push({
-          path: context.path,
-          message: `Expected array of length ${schema.length}, got array of length ${value.length}`,
-        });
-      }
+      reportError(context, `Expected ${description}, got array of length ${value.length}`);
       return { success: false };
     }
     const result = (() => {
@@ -425,42 +412,41 @@ function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema
       }
     }
     return { success: false };
-  });
+  }, description);
 }
 
 function createUndefinedSchema(): Schema<undefined> {
-  return new Schema<undefined>((value, context) => {
-    if (value !== undefined) {
-      if (context !== undefined) {
-        context.errors.push({ path: context.path, message: `Expected undefined, got ${inspectValue(value)}` });
-      }
-      return { success: false };
-    }
-    return { success: true, data: value };
-  });
+  return createTypeSchema('undefined', (value): value is undefined => value === undefined);
 }
 
 function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schema<T[K]> }): Schema<T[number]> {
+  const description = () => [...new Set(schemas.map((schema) => schema.description))].join(' | ');
   return new Schema<T[number]>((value, context) => {
+    const applicableSchemas = new Array<Schema<T[number]>>();
     for (const schema of schemas) {
       const result = schema.internalSafeParse(value);
       if (result.success) {
         return result;
       }
-    }
-    if (context !== undefined) {
-      for (const schema of schemas) {
-        schema.internalSafeParse(value, context);
+      if (result.mismatch !== true) {
+        applicableSchemas.push(schema);
       }
     }
-    return { success: false };
-  });
+    // A member that rejected the value outright says nothing the union's own message doesn't, so member errors are
+    // reported only where one member is the single one the value could have been meant for.
+    const [applicableSchema] = applicableSchemas;
+    if (applicableSchema !== undefined && applicableSchemas.length === 1) {
+      applicableSchema.internalSafeParse(value, context);
+      return { success: false };
+    }
+    return { success: false, mismatch: true };
+  }, description);
 }
 
 function createUnknownSchema(): Schema<unknown> {
   return new Schema<unknown>((value) => {
     return { success: true, data: value };
-  });
+  }, 'unknown');
 }
 
 export {
