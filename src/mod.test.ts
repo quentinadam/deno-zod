@@ -986,6 +986,42 @@ Deno.test('discriminated union schema reports ambiguous discriminator values', (
   assertThrows(() => unionSchema.parse(ambiguousData), 'Ambiguous discriminator value string "same"');
 });
 
+// Test record with a key schema
+Deno.test('record checks its keys against a key schema', () => {
+  const schema = z.record(z.literal(['EUR', 'USD'] as const), z.number());
+
+  const parsed = schema.parse({ EUR: 100 });
+  assert(parsed.EUR === 100);
+  // A key of the right type need not be there, so the result is partial
+  assert(parsed.USD === undefined);
+
+  const badKey = schema.safeParse({ GBP: 1 });
+  assert(badKey.success === false);
+  assert(badKey.message === 'Invalid key: Expected literal "EUR" | literal "USD", got string "GBP" at GBP');
+
+  const badValue = schema.safeParse({ EUR: 'x' });
+  assert(badValue.success === false);
+  assert(badValue.message === 'Expected number, got string "x" at EUR');
+});
+
+// Test that a key schema of no fixed set of keys keeps the index signature
+Deno.test('record with string keys is not partial', () => {
+  const schema = z.record(z.string().transform((key) => key.toLowerCase()), z.string());
+
+  const parsed = schema.parse({ 'Content-Type': 'application/json' });
+  // A string key stands for any key, so the values are what they parsed to rather than possibly absent
+  const values: string[] = Object.values(parsed);
+  assert(values.length === 1);
+  assert(parsed['content-type'] === 'application/json');
+});
+
+// Test that the key schema parses the key, rather than only checking it
+Deno.test('record parses its keys through the key schema', () => {
+  const schema = z.record(z.string().transform((key) => key.toUpperCase()), z.number());
+
+  assert(JSON.stringify(schema.parse({ a: 1, b: 2 })) === '{"A":1,"B":2}');
+});
+
 // Test that collecting errors visits only what failed
 Deno.test('a failing object parses the members that succeeded once', () => {
   let siblingRuns = 0;

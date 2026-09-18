@@ -379,17 +379,27 @@ function createNumberSchema(): Schema<number> {
   return createTypeSchema('number', (value) => typeof value === 'number');
 }
 
-function createRecordSchema<T>(schema: Schema<T>): Schema<Record<string, T>> {
-  return new Schema<Record<string, T>>((record, context): Result<Record<string, T>> => {
+function createRecordSchema<T>(valueSchema: Schema<T>): Schema<Record<string, T>>;
+function createRecordSchema<K extends string, T>(
+  keySchema: Schema<K>,
+  valueSchema: Schema<T>,
+): Schema<string extends K ? Record<string, T> : Partial<Record<K, T>>>;
+function createRecordSchema<K extends string, T>(
+  ...schemas: [Schema<T>] | [Schema<K>, Schema<T>]
+): Schema<Record<string, T>> | Schema<string extends K ? Record<string, T> : Partial<Record<K, T>>> {
+  const keySchema = schemas.length === 2 ? schemas[0] : undefined;
+  const valueSchema = schemas.length === 2 ? schemas[1] : schemas[0];
+  return new Schema((record, context): Result<Record<string, T>> => {
     if (!isPlainObject(record)) {
       return { success: false, mismatch: true };
     }
     const parsedObject: Record<string, T> = {};
     const failedEntries = new Array<[string, unknown]>();
     for (const [key, value] of Object.entries(record)) {
-      const result = schema[internalParse](value);
-      if (result.success) {
-        parsedObject[key] = result.data;
+      const keyResult = keySchema === undefined ? { success: true as const, data: key } : keySchema[internalParse](key);
+      const valueResult = valueSchema[internalParse](value);
+      if (keyResult.success && valueResult.success) {
+        parsedObject[keyResult.data] = valueResult.data;
       } else {
         failedEntries.push([key, value]);
       }
@@ -399,7 +409,16 @@ function createRecordSchema<T>(schema: Schema<T>): Schema<Record<string, T>> {
     }
     if (context !== undefined) {
       for (const [key, value] of failedEntries) {
-        schema[internalParse](value, { path: [...context.path, key], errors: context.errors });
+        const entryContext = { path: [...context.path, key], errors: context.errors };
+        if (keySchema !== undefined) {
+          // The key's own errors, said of the key rather than of the value that sits at the same path.
+          const keyErrors = new Array<ValidationError>();
+          keySchema[internalParse](key, { path: [], errors: keyErrors });
+          for (const { message } of keyErrors) {
+            reportError(entryContext, `Invalid key: ${message}`);
+          }
+        }
+        valueSchema[internalParse](value, entryContext);
       }
     }
     return { success: false };
