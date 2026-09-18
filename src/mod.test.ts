@@ -22,10 +22,16 @@ function assertThrows(fn: () => void, messageIncludes?: string): unknown {
 Deno.test('inspectValue returns correct type strings', () => {
   assert(z.inspectValue(undefined) === 'undefined');
   assert(z.inspectValue(null) === 'null');
-  assert(z.inspectValue([]) === 'array');
-  assert(z.inspectValue([1, 2, 3]) === 'array');
+  assert(z.inspectValue([]) === 'array of length 0');
+  assert(z.inspectValue([1, 2, 3]) === 'array of length 3');
   assert(z.inspectValue({}) === 'object');
+  assert(z.inspectValue({ a: 1, b: 2 }) === 'object with keys a, b');
+  assert(z.inspectValue({ a: 1, b: 2, c: 3, d: 4 }) === 'object with keys a, b, c... 1 more key');
+  assert(z.inspectValue({ a: 1, b: 2, c: 3, d: 4, e: 5 }) === 'object with keys a, b, c... 2 more keys');
+  assert(z.inspectValue(new Date(0)) === 'instance of Date');
   assert(z.inspectValue('hello') === 'string "hello"');
+  assert(z.inspectValue('x'.repeat(40)) === `string ${JSON.stringify('x'.repeat(32))}... 8 more characters`);
+  assert(z.inspectValue('x'.repeat(33)) === `string ${JSON.stringify('x'.repeat(32))}... 1 more character`);
   assert(z.inspectValue(123) === 'number 123');
   assert(z.inspectValue(true) === 'boolean true');
   assert(z.inspectValue(BigInt(123)) === 'bigint 123');

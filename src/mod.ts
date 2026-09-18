@@ -10,13 +10,24 @@ type Result<T> = { success: true; data: T } | { success: false; mismatch?: true 
 type Description = string | (() => string);
 
 const IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const MAX_INSPECTED_STRING_LENGTH = 32;
+const MAX_INSPECTED_KEYS = 3;
+
+/** The `... N more x` suffix `util.inspect` uses in Node and in Deno for a value it cut short. */
+function elided(count: number, noun: string) {
+  return `... ${count} more ${noun}${count === 1 ? '' : 's'}`;
+}
 
 export function inspectValue(value: unknown): string {
   if (value === undefined) return 'undefined';
   if (value === null) return 'null';
-  if (Array.isArray(value)) return 'array';
+  if (Array.isArray(value)) return `array of length ${value.length}`;
   if (typeof value === 'string') {
-    return `string ${value.length > 32 ? JSON.stringify(value.slice(0, 32) + '...') : JSON.stringify(value)}`;
+    if (value.length > MAX_INSPECTED_STRING_LENGTH) {
+      const shown = JSON.stringify(value.slice(0, MAX_INSPECTED_STRING_LENGTH));
+      return `string ${shown}${elided(value.length - MAX_INSPECTED_STRING_LENGTH, 'character')}`;
+    }
+    return `string ${JSON.stringify(value)}`;
   }
   if (typeof value === 'number') {
     return `number ${value}`;
@@ -26,6 +37,21 @@ export function inspectValue(value: unknown): string {
   }
   if (typeof value === 'boolean') {
     return `boolean ${value}`;
+  }
+  if (typeof value === 'object') {
+    const name = Object.getPrototypeOf(value)?.constructor?.name;
+    if (name !== undefined && name !== 'Object') {
+      return `instance of ${name}`;
+    }
+    const keys = Object.keys(value);
+    if (keys.length === 0) {
+      return 'object';
+    }
+    const shown = keys.slice(0, MAX_INSPECTED_KEYS).join(', ');
+    if (keys.length > MAX_INSPECTED_KEYS) {
+      return `object with keys ${shown}${elided(keys.length - MAX_INSPECTED_KEYS, 'key')}`;
+    }
+    return `object with keys ${shown}`;
   }
   return typeof value;
 }
