@@ -9,6 +9,9 @@ type Result<T> = { success: true; data: T } | { success: false; mismatch?: true 
 /** Deferred where building it costs more than the schema itself, as a union's and a literal's do. */
 type Description = string | (() => string);
 
+/** Keyed by a symbol this module does not export, so that only the schemas in it can parse through one another. */
+const internalParse: unique symbol = Symbol('internalParse');
+
 const IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const MAX_INSPECTED_STRING_LENGTH = 32;
 const MAX_INSPECTED_KEYS = 3;
@@ -131,14 +134,14 @@ export class Schema<T> {
     | { success: true; data: T }
     | { success: false; message: string; errors: ValidationError[] } {
     const context: Context = { path: [], errors: [] };
-    const result = this.internalSafeParse(value, context);
+    const result = this[internalParse](value, context);
     if (result.success) {
       return result;
     }
     return { success: false, message: formatErrors(context.errors), errors: context.errors };
   }
 
-  internalSafeParse(value: unknown, context?: Context): Result<T> {
+  [internalParse](value: unknown, context?: Context): Result<T> {
     if (context === undefined) {
       return this.#safeParseFn(value);
     }
@@ -155,9 +158,9 @@ export class Schema<T> {
 
   /** Records a failure found inside the value, leaving a value the schema does not accept for its caller to name. */
   #parseUnobserved(value: unknown, context: Context | undefined): Result<T> {
-    const result = this.internalSafeParse(value);
+    const result = this[internalParse](value);
     if (!result.success && result.mismatch !== true) {
-      this.internalSafeParse(value, context);
+      this[internalParse](value, context);
     }
     return result;
   }
@@ -217,7 +220,7 @@ export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
       // Which members failed, so that collecting their errors does not parse the ones that succeeded a second time.
       const failures = new Array<{ key: string; valueSchema: Schema<unknown>; missing: boolean }>();
       for (const [key, valueSchema] of Object.entries<Schema<unknown>>(schema)) {
-        const result = valueSchema.internalSafeParse(value[key]);
+        const result = valueSchema[internalParse](value[key]);
         if (result.success) {
           parsedObject[key] = result.data;
         } else {
@@ -234,7 +237,7 @@ export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
           if (missing) {
             reportError(keyContext, `Expected ${valueSchema.description}, got nothing`);
           } else {
-            valueSchema.internalSafeParse(value[key], keyContext);
+            valueSchema[internalParse](value[key], keyContext);
           }
         }
         if (unrecognizedKeys.length > 0) {
@@ -269,7 +272,7 @@ function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
     const parsedItems = new Array<T>();
     const failedIndexes = new Array<number>();
     for (let index = 0; index < value.length; index++) {
-      const result = schema.internalSafeParse(value[index]);
+      const result = schema[internalParse](value[index]);
       if (result.success) {
         parsedItems.push(result.data);
       } else {
@@ -281,7 +284,7 @@ function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
     }
     if (context !== undefined) {
       for (const index of failedIndexes) {
-        schema.internalSafeParse(value[index], { path: [...context.path, index], errors: context.errors });
+        schema[internalParse](value[index], { path: [...context.path, index], errors: context.errors });
       }
     }
     return { success: false };
@@ -310,7 +313,7 @@ function createDiscriminatedUnionSchema<B extends string, T extends Record<B, un
     }
     const discriminatorValue = value[discriminator];
     const discriminatedSchemas = schemas.filter((schema) => {
-      return schema.shape[discriminator].internalSafeParse(discriminatorValue).success;
+      return schema.shape[discriminator][internalParse](discriminatorValue).success;
     });
     const [discriminatedSchema, ...ambiguousSchemas] = discriminatedSchemas;
     if (discriminatedSchema === undefined || ambiguousSchemas.length > 0) {
@@ -321,7 +324,7 @@ function createDiscriminatedUnionSchema<B extends string, T extends Record<B, un
       );
       return { success: false };
     }
-    return discriminatedSchema.internalSafeParse(value, context);
+    return discriminatedSchema[internalParse](value, context);
   }, 'object');
 }
 
@@ -331,7 +334,7 @@ function createInstanceofSchema<T>(schema: { new (...args: any[]): T }): Schema<
 }
 
 function createLazySchema<T>(fn: () => Schema<T>): Schema<T> {
-  return new Schema((value, context) => fn().internalSafeParse(value, context));
+  return new Schema((value, context) => fn()[internalParse](value, context));
 }
 
 function isReadonlyArray(value: unknown): value is readonly unknown[] {
@@ -384,7 +387,7 @@ function createRecordSchema<T>(schema: Schema<T>): Schema<Record<string, T>> {
     const parsedObject: Record<string, T> = {};
     const failedEntries = new Array<[string, unknown]>();
     for (const [key, value] of Object.entries(record)) {
-      const result = schema.internalSafeParse(value);
+      const result = schema[internalParse](value);
       if (result.success) {
         parsedObject[key] = result.data;
       } else {
@@ -396,7 +399,7 @@ function createRecordSchema<T>(schema: Schema<T>): Schema<Record<string, T>> {
     }
     if (context !== undefined) {
       for (const [key, value] of failedEntries) {
-        schema.internalSafeParse(value, { path: [...context.path, key], errors: context.errors });
+        schema[internalParse](value, { path: [...context.path, key], errors: context.errors });
       }
     }
     return { success: false };
@@ -427,7 +430,7 @@ function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema
     const failedEntries = new Array<[number, Schema<unknown>]>();
     let index = 0;
     for (const itemSchema of schema) {
-      const result = itemSchema.internalSafeParse(value[index]);
+      const result = itemSchema[internalParse](value[index]);
       if (result.success) {
         parsedItems.push(result.data);
       } else {
@@ -440,7 +443,7 @@ function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema
     }
     if (context !== undefined) {
       for (const [failedIndex, itemSchema] of failedEntries) {
-        itemSchema.internalSafeParse(value[failedIndex], {
+        itemSchema[internalParse](value[failedIndex], {
           path: [...context.path, failedIndex],
           errors: context.errors,
         });
@@ -459,7 +462,7 @@ function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schem
   return new Schema<T[number]>((value, context) => {
     const applicableSchemas = new Array<Schema<T[number]>>();
     for (const schema of schemas) {
-      const result = schema.internalSafeParse(value);
+      const result = schema[internalParse](value);
       if (result.success) {
         return result;
       }
@@ -471,7 +474,7 @@ function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schem
     // reported only where one member is the single one the value could have been meant for.
     const [applicableSchema] = applicableSchemas;
     if (applicableSchema !== undefined && applicableSchemas.length === 1) {
-      applicableSchema.internalSafeParse(value, context);
+      applicableSchema[internalParse](value, context);
       return { success: false };
     }
     return { success: false, mismatch: true };
