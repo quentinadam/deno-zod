@@ -295,7 +295,7 @@ function createDateSchema(): Schema<Date> {
   return createInstanceofSchema<Date>(Date);
 }
 
-function createDiscrimatedUnionSchema<B extends string, T extends Record<B, unknown>[]>(
+function createDiscriminatedUnionSchema<B extends string, T extends Record<B, unknown>[]>(
   discriminator: B,
   schemas: { [K in keyof T]: ObjectSchema<T[K]> },
 ): Schema<T[number]> {
@@ -484,7 +484,7 @@ export {
   createBigIntSchema as bigint,
   createBooleanSchema as boolean,
   createDateSchema as date,
-  createDiscrimatedUnionSchema as discriminatedUnion,
+  createDiscriminatedUnionSchema as discriminatedUnion,
   createInstanceofSchema as instanceof,
   createLazySchema as lazy,
   createLiteralSchema as literal,
