@@ -765,7 +765,7 @@ Deno.test('optional fields in objects', () => {
       optional: 'maybe',
       nullable: null,
       nullish: null,
-    }), 'Expected string, got undefined');
+    }), 'Expected string, got nothing');
 });
 
 // Test that parse creates new objects (doesn't maintain referential equality)
@@ -999,6 +999,22 @@ Deno.test('a failing object parses the members that succeeded once', () => {
   assert(result.success === false);
   assert(result.errors.length === 2);
   assert(siblingRuns === 1);
+});
+
+// Test that an absent property is told apart from one that is there and undefined
+Deno.test('a missing property is reported as missing', () => {
+  const schema = z.object({ name: z.string(), note: z.string().optional() });
+
+  const missing = schema.safeParse({});
+  assert(missing.success === false);
+  assert(missing.message === 'Expected string, got nothing at name');
+
+  const explicit = schema.safeParse({ name: undefined });
+  assert(explicit.success === false);
+  assert(explicit.message === 'Expected string, got undefined at name');
+
+  // An optional member accepts an absent key, so it is not a failure at all
+  assert(schema.parse({ name: 'John' }).name === 'John');
 });
 
 // Test refine

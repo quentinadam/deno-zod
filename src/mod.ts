@@ -215,22 +215,27 @@ export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
       }
       const parsedObject: Record<string, unknown> = {};
       // Which members failed, so that collecting their errors does not parse the ones that succeeded a second time.
-      const failedEntries = new Array<[string, Schema<unknown>]>();
+      const failures = new Array<{ key: string; valueSchema: Schema<unknown>; missing: boolean }>();
       for (const [key, valueSchema] of Object.entries<Schema<unknown>>(schema)) {
         const result = valueSchema.internalSafeParse(value[key]);
         if (result.success) {
           parsedObject[key] = result.data;
         } else {
-          failedEntries.push([key, valueSchema]);
+          failures.push({ key, valueSchema, missing: result.mismatch === true && !(key in value) });
         }
       }
       const unrecognizedKeys = strict ? Object.keys(value).filter((key) => !(key in schema)) : [];
-      if (failedEntries.length === 0 && unrecognizedKeys.length === 0) {
+      if (failures.length === 0 && unrecognizedKeys.length === 0) {
         return { success: true, data: parsedObject as T };
       }
       if (context !== undefined) {
-        for (const [key, valueSchema] of failedEntries) {
-          valueSchema.internalSafeParse(value[key], { path: [...context.path, key], errors: context.errors });
+        for (const { key, valueSchema, missing } of failures) {
+          const keyContext = { path: [...context.path, key], errors: context.errors };
+          if (missing) {
+            reportError(keyContext, `Expected ${valueSchema.description}, got nothing`);
+          } else {
+            valueSchema.internalSafeParse(value[key], keyContext);
+          }
         }
         if (unrecognizedKeys.length > 0) {
           reportError(context, `Unrecognized keys: ${unrecognizedKeys.join(', ')}`);
