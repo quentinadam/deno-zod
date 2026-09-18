@@ -18,6 +18,9 @@ const internalParse: unique symbol = Symbol('internalParse');
  */
 const enumerableValues: unique symbol = Symbol('enumerableValues');
 
+/** Marks the schemas that stand for a member a value may leave out, so that an object can type such a member optional. */
+const optional: unique symbol = Symbol('optional');
+
 function withValues<T>(schema: Schema<T>, values: Iterable<unknown>) {
   schema[enumerableValues] = new Set(values);
   return schema;
@@ -219,7 +222,7 @@ export class Schema<T> {
     }, this.#description);
   }
 
-  optional(): Schema<T | undefined> {
+  optional(): OptionalSchema<T> {
     return createOptionalSchema<T>(this);
   }
 
@@ -227,37 +230,60 @@ export class Schema<T> {
     return createNullableSchema<T>(this);
   }
 
-  nullish(): Schema<T | null | undefined> {
+  nullish(): OptionalSchema<T | null> {
     return createNullishSchema<T>(this);
   }
 }
 
-export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
-  readonly #schema: { [K in keyof T]: Schema<T[K]> };
+/** A schema that accepts an absent value, which is what makes the member it stands for optional in an object. */
+export class OptionalSchema<T> extends Schema<T | undefined> {
+  declare [optional]: true;
 
-  get shape(): { [K in keyof T]: Schema<T[K]> } {
-    return this.#schema;
+  constructor(schema: Schema<T>) {
+    const union = createUnionSchema([createUndefinedSchema(), schema]);
+    super((value, context) => union[internalParse](value, context), () => union.description);
+  }
+}
+
+type Infer<S> = S extends Schema<infer T> ? T : never;
+
+/** Members that accept an absent value become optional keys, and a parsed object leaves them out rather than
+ * holding an undefined. */
+type InferShape<S extends Record<string, Schema<unknown>>> = S extends unknown ?
+    & { [K in keyof S as S[K] extends OptionalSchema<unknown> ? never : K]: Infer<S[K]> }
+    & { [K in keyof S as S[K] extends OptionalSchema<unknown> ? K : never]?: Exclude<Infer<S[K]>, undefined> }
+  : never;
+
+export class ObjectSchema<S extends Record<string, Schema<unknown>>> extends Schema<InferShape<S>> {
+  readonly #shape: S;
+
+  get shape(): S {
+    return this.#shape;
   }
 
-  constructor(schema: { [K in keyof T]: Schema<T[K]> }, strict = false) {
-    super((value, context): Result<T> => {
+  constructor(shape: S, strict = false) {
+    const members = Object.entries<Schema<unknown>>(shape).map(([key, valueSchema]) => {
+      return { key, valueSchema, optional: valueSchema instanceof OptionalSchema };
+    });
+    super((value, context): Result<InferShape<S>> => {
       if (!isPlainObject(value)) {
         return { success: false, mismatch: true };
       }
       const parsedObject: Record<string, unknown> = {};
       // Which members failed, so that collecting their errors does not parse the ones that succeeded a second time.
       const failures = new Array<{ key: string; valueSchema: Schema<unknown>; missing: boolean }>();
-      for (const [key, valueSchema] of Object.entries<Schema<unknown>>(schema)) {
+      for (const member of members) {
+        const { key, valueSchema } = member;
         const result = valueSchema[internalParse](value[key]);
-        if (result.success) {
-          parsedObject[key] = result.data;
-        } else {
+        if (!result.success) {
           failures.push({ key, valueSchema, missing: result.mismatch === true && !(key in value) });
+        } else if (result.data !== undefined || !member.optional) {
+          parsedObject[key] = result.data;
         }
       }
-      const unrecognizedKeys = strict ? Object.keys(value).filter((key) => !(key in schema)) : [];
+      const unrecognizedKeys = strict ? Object.keys(value).filter((key) => !(key in shape)) : [];
       if (failures.length === 0 && unrecognizedKeys.length === 0) {
-        return { success: true, data: parsedObject as T };
+        return { success: true, data: parsedObject as InferShape<S> };
       }
       if (context !== undefined) {
         for (const { key, valueSchema, missing } of failures) {
@@ -269,7 +295,7 @@ export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
       }
       return { success: false };
     }, 'object');
-    this.#schema = schema;
+    this.#shape = shape;
   }
 }
 
@@ -326,11 +352,11 @@ function createDateSchema(): Schema<Date> {
   return createInstanceofSchema<Date>(Date);
 }
 
-function createDiscriminatedUnionSchema<B extends string, T extends Record<B, unknown>[]>(
-  discriminator: B,
-  schemas: { [K in keyof T]: ObjectSchema<T[K]> },
-): Schema<T[number]> {
-  return new Schema<T[number]>((value, context) => {
+function createDiscriminatedUnionSchema<
+  B extends string,
+  S extends (Record<B, Schema<unknown>> & Record<string, Schema<unknown>>)[],
+>(discriminator: B, schemas: { [K in keyof S]: ObjectSchema<S[K]> }): Schema<InferShape<S[number]>> {
+  return new Schema<InferShape<S[number]>>((value, context) => {
     if (!isPlainObject(value)) {
       return { success: false, mismatch: true };
     }
@@ -376,22 +402,20 @@ function createLiteralSchema<T extends string | number | boolean | null | undefi
   );
 }
 
-function createObjectSchema<T extends Record<string, unknown>>(
-  schema: { [K in keyof T]: Schema<T[K]> },
-): ObjectSchema<T> {
-  return new ObjectSchema<T>(schema, false);
+function createObjectSchema<S extends Record<string, Schema<unknown>>>(shape: S): ObjectSchema<S> {
+  return new ObjectSchema<S>(shape, false);
 }
 
-function createOptionalSchema<T>(schema: Schema<T>): Schema<T | undefined> {
-  return createUnionSchema([createUndefinedSchema(), schema]);
+function createOptionalSchema<T>(schema: Schema<T>): OptionalSchema<T> {
+  return new OptionalSchema(schema);
 }
 
 function createNullableSchema<T>(schema: Schema<T>): Schema<T | null> {
   return createUnionSchema([createNullSchema(), schema]);
 }
 
-function createNullishSchema<T>(schema: Schema<T>): Schema<T | null | undefined> {
-  return createUnionSchema([createNullSchema(), createUndefinedSchema(), schema]);
+function createNullishSchema<T>(schema: Schema<T>): OptionalSchema<T | null> {
+  return new OptionalSchema(createNullableSchema(schema));
 }
 
 function createNullSchema(): Schema<null> {
@@ -507,10 +531,8 @@ function createPartialRecordSchema<K extends string, T>(
   >;
 }
 
-function createStrictObjectSchema<T extends Record<string, unknown>>(
-  schema: { [K in keyof T]: Schema<T[K]> },
-): Schema<T> {
-  return new ObjectSchema<T>(schema, true);
+function createStrictObjectSchema<S extends Record<string, Schema<unknown>>>(shape: S): Schema<InferShape<S>> {
+  return new ObjectSchema<S>(shape, true);
 }
 
 function createStringSchema(): Schema<string> {

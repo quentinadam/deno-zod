@@ -517,8 +517,8 @@ Deno.test('nullish function creates nullable and optional schemas', () => {
   assert(schema.parse(null) === null);
   assert(schema.parse(undefined) === undefined);
 
-  assertThrows(() => schema.parse(123), 'Expected null | undefined | string, got number 123');
-  assertThrows(() => schema.parse(true), 'Expected null | undefined | string, got boolean true');
+  assertThrows(() => schema.parse(123), 'Expected undefined | null | string, got number 123');
+  assertThrows(() => schema.parse(true), 'Expected undefined | null | string, got boolean true');
 
   // Test with other types
   const objectSchema = z.nullish(z.object({ id: z.number() }));
@@ -586,7 +586,7 @@ Deno.test('nullish schema works with transform', () => {
   assert(schema.parse(null) === null);
   assert(schema.parse(undefined) === undefined);
 
-  assertThrows(() => schema.parse(123), 'Expected null | undefined | string, got number 123');
+  assertThrows(() => schema.parse(123), 'Expected undefined | null | string, got number 123');
 });
 
 // Test empty object validation
@@ -1092,6 +1092,31 @@ Deno.test('a missing property is reported as missing', () => {
 
   // An optional member accepts an absent key, so it is not a failure at all
   assert(schema.parse({ name: 'John' }).name === 'John');
+});
+
+// Test that an optional member is left out rather than held as undefined
+Deno.test('an optional member absent from the value is absent from the result', () => {
+  const schema = z.object({ name: z.string(), note: z.string().optional(), tag: z.string().nullish() });
+
+  const parsed = schema.parse({ name: 'John' });
+  assert(JSON.stringify(Object.keys(parsed)) === '["name"]');
+  assert(parsed.note === undefined);
+
+  // The type says as much: the optional members may be left out of a value of it
+  const typed: { name: string; note?: string; tag?: string | null } = parsed;
+  assert(typed.name === 'John');
+
+  // A member that is there keeps its value, and one given undefined is still left out
+  assert(JSON.stringify(schema.parse({ name: 'John', note: 'hi' })) === '{"name":"John","note":"hi"}');
+  assert(JSON.stringify(schema.parse({ name: 'John', note: undefined })) === '{"name":"John"}');
+});
+
+// Test that a member whose own type is undefined is kept, since nothing says it may be left out
+Deno.test('a member that parses to undefined without being optional is kept', () => {
+  const schema = z.object({ nothing: z.undefined() });
+
+  const parsed = schema.parse({ nothing: undefined });
+  assert(JSON.stringify(Object.keys(parsed)) === '["nothing"]');
 });
 
 // Test refine
