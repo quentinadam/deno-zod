@@ -21,11 +21,6 @@ const enumerableValues: unique symbol = Symbol('enumerableValues');
 /** Marks the schemas that stand for a member a value may leave out, so that an object can type such a member optional. */
 const optional: unique symbol = Symbol('optional');
 
-function withValues<T>(schema: Schema<T>, values: Iterable<unknown>) {
-  schema[enumerableValues] = new Set(values);
-  return schema;
-}
-
 const IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const MAX_INSPECTED_STRING_LENGTH = 32;
 const MAX_INSPECTED_KEYS = 3;
@@ -132,13 +127,19 @@ function reportError(context: Context | undefined, message: string) {
 
 export class Schema<T> {
   // Declared rather than defined: a schema that knows no set of values carries no slot for one.
-  declare [enumerableValues]?: ReadonlySet<unknown>;
+  declare [enumerableValues]?: ReadonlySet<T>;
   readonly #safeParseFn: (value: unknown, context?: Context) => Result<T>;
   readonly #description: Description;
 
-  constructor(safeParseFn: (value: unknown, context?: Context) => Result<T>, description: Description = 'value') {
+  constructor(
+    safeParseFn: (value: unknown, context?: Context) => Result<T>,
+    { description = 'value', values }: { description?: Description; values?: Iterable<T> | undefined } = {},
+  ) {
     this.#safeParseFn = safeParseFn;
     this.#description = description;
+    if (values !== undefined) {
+      this[enumerableValues] = new Set(values);
+    }
   }
 
   /** How the schema names what it accepts, as `Expected …, got …` and a union listing its members both do. */
@@ -148,9 +149,7 @@ export class Schema<T> {
 
   /** Renames the schema in its own message and where a union lists its members. */
   describe(description: string): Schema<T> {
-    const schema = new Schema(this.#safeParseFn, description);
-    const values = this[enumerableValues];
-    return values === undefined ? schema : withValues(schema, values);
+    return new Schema(this.#safeParseFn, { description, values: this[enumerableValues] });
   }
 
   parse(value: unknown): T {
@@ -208,7 +207,7 @@ export class Schema<T> {
         reportError(context, error instanceof Error ? error.message : String(error));
         return { success: false };
       }
-    }, this.#description);
+    }, { description: this.#description });
   }
 
   refine(check: (value: T) => boolean, message: string | ((value: T) => string)): Schema<T> {
@@ -219,7 +218,7 @@ export class Schema<T> {
       }
       reportError(context, typeof message === 'string' ? message : message(result.data));
       return { success: false };
-    }, this.#description);
+    }, { description: this.#description });
   }
 
   optional(): OptionalSchema<T> {
@@ -241,7 +240,7 @@ export class OptionalSchema<T> extends Schema<T | undefined> {
 
   constructor(schema: Schema<T>) {
     const union = createUnionSchema([createUndefinedSchema(), schema]);
-    super((value, context) => union[internalParse](value, context), () => union.description);
+    super((value, context) => union[internalParse](value, context), { description: () => union.description });
   }
 }
 
@@ -294,7 +293,7 @@ export class ObjectSchema<S extends Record<string, Schema<unknown>>> extends Sch
         }
       }
       return { success: false };
-    }, 'object');
+    }, { description: 'object' });
     this.#shape = shape;
   }
 }
@@ -304,13 +303,16 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** A schema that accepts whatever its guard accepts, which is every schema whose contents it does not then parse. */
-function createTypeSchema<T>(description: Description, accepts: (value: unknown) => value is T): Schema<T> {
+function createTypeSchema<T>(
+  accepts: (value: unknown) => value is T,
+  options: { description: Description; values?: Iterable<T> },
+): Schema<T> {
   return new Schema<T>((value) => {
     if (!accepts(value)) {
       return { success: false, mismatch: true };
     }
     return { success: true, data: value };
-  }, description);
+  }, options);
 }
 
 function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
@@ -337,15 +339,15 @@ function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
       }
     }
     return { success: false };
-  }, 'array');
+  }, { description: 'array' });
 }
 
 function createBigIntSchema(): Schema<bigint> {
-  return createTypeSchema('bigint', (value) => typeof value === 'bigint');
+  return createTypeSchema((value) => typeof value === 'bigint', { description: 'bigint' });
 }
 
 function createBooleanSchema(): Schema<boolean> {
-  return createTypeSchema('boolean', (value) => typeof value === 'boolean');
+  return createTypeSchema((value) => typeof value === 'boolean', { description: 'boolean' });
 }
 
 function createDateSchema(): Schema<Date> {
@@ -374,12 +376,14 @@ function createDiscriminatedUnionSchema<
       return { success: false };
     }
     return discriminatedSchema[internalParse](value, context);
-  }, 'object');
+  }, { description: 'object' });
 }
 
 // deno-lint-ignore no-explicit-any
 function createInstanceofSchema<T>(schema: { new (...args: any[]): T }): Schema<T> {
-  return createTypeSchema(`instance of ${schema.name}`, (value): value is T => value instanceof schema);
+  return createTypeSchema((value): value is T => value instanceof schema, {
+    description: `instance of ${schema.name}`,
+  });
 }
 
 function createLazySchema<T>(fn: () => Schema<T>): Schema<T> {
@@ -396,10 +400,10 @@ function createLiteralSchema<T extends string | number | boolean | null | undefi
   if (isReadonlyArray(literal)) {
     return createUnionSchema(literal.map((item) => createLiteralSchema(item)));
   }
-  return withValues(
-    createTypeSchema(() => `literal ${JSON.stringify(literal)}`, (value): value is T => value === literal),
-    [literal],
-  );
+  return createTypeSchema((value): value is T => value === literal, {
+    description: () => `literal ${JSON.stringify(literal)}`,
+    values: [literal],
+  });
 }
 
 function createObjectSchema<S extends Record<string, Schema<unknown>>>(shape: S): ObjectSchema<S> {
@@ -419,11 +423,11 @@ function createNullishSchema<T>(schema: Schema<T>): OptionalSchema<T | null> {
 }
 
 function createNullSchema(): Schema<null> {
-  return withValues(createTypeSchema('null', (value): value is null => value === null), [null]);
+  return createTypeSchema((value): value is null => value === null, { description: 'null', values: [null] });
 }
 
 function createNumberSchema(): Schema<number> {
-  return createTypeSchema('number', (value) => typeof value === 'number');
+  return createTypeSchema((value) => typeof value === 'number', { description: 'number' });
 }
 
 /** Parses the keys the value happens to have, each through the key schema where there is one. */
@@ -464,7 +468,7 @@ function buildRecordSchema<T>(
       }
     }
     return { success: false };
-  }, 'object');
+  }, { description: 'object' });
 }
 
 /** Parses the keys the key schema knows about, every one of which must be there, and no others. */
@@ -499,7 +503,7 @@ function buildExhaustiveRecordSchema<T>(
       }
     }
     return { success: false };
-  }, 'object');
+  }, { description: 'object' });
 }
 
 function createRecordSchema<T>(valueSchema: Schema<T>): Schema<Record<string, T>>;
@@ -515,8 +519,7 @@ function createRecordSchema<K extends string, T>(
   if (values === undefined) {
     return buildRecordSchema(keySchema, valueSchema);
   }
-  const keys = new Set([...values].filter((value) => typeof value === 'string'));
-  return buildExhaustiveRecordSchema(keys, valueSchema);
+  return buildExhaustiveRecordSchema(new Set(values), valueSchema);
 }
 
 /** A record of the same keys, none of which has to be there. */
@@ -536,7 +539,7 @@ function createStrictObjectSchema<S extends Record<string, Schema<unknown>>>(sha
 }
 
 function createStringSchema(): Schema<string> {
-  return createTypeSchema('string', (value) => typeof value === 'string');
+  return createTypeSchema((value) => typeof value === 'string', { description: 'string' });
 }
 
 function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema<T[K]> }): Schema<T> {
@@ -573,11 +576,14 @@ function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema
       }
     }
     return { success: false };
-  }, description);
+  }, { description });
 }
 
 function createUndefinedSchema(): Schema<undefined> {
-  return withValues(createTypeSchema('undefined', (value): value is undefined => value === undefined), [undefined]);
+  return createTypeSchema((value): value is undefined => value === undefined, {
+    description: 'undefined',
+    values: [undefined],
+  });
 }
 
 function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schema<T[K]> }): Schema<T[number]> {
@@ -593,7 +599,7 @@ function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schem
     }
     return values;
   })();
-  const schema = new Schema<T[number]>((value, context) => {
+  return new Schema<T[number]>((value, context) => {
     const applicableSchemas = new Array<Schema<T[number]>>();
     for (const schema of schemas) {
       const result = schema[internalParse](value);
@@ -612,14 +618,13 @@ function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schem
       return { success: false };
     }
     return { success: false, mismatch: true };
-  }, description);
-  return values === undefined ? schema : withValues(schema, values);
+  }, { description, values });
 }
 
 function createUnknownSchema(): Schema<unknown> {
   return new Schema<unknown>((value) => {
     return { success: true, data: value };
-  }, 'unknown');
+  }, { description: 'unknown' });
 }
 
 export {
