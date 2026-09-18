@@ -183,40 +183,31 @@ export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
   }
 
   constructor(schema: { [K in keyof T]: Schema<T[K]> }, strict = false) {
-    super((value, context) => {
+    super((value, context): Result<T> => {
       if (!isPlainObject(value)) {
         return { success: false, mismatch: true };
       }
-      const result = (() => {
-        const parsedObject: Record<string, unknown> = {};
-        for (const [key, valueSchema] of Object.entries<Schema<unknown>>(schema)) {
-          const result = valueSchema.internalSafeParse(value[key]);
-          if (!result.success) {
-            return result;
-          }
+      const parsedObject: Record<string, unknown> = {};
+      // Which members failed, so that collecting their errors does not parse the ones that succeeded a second time.
+      const failedEntries = new Array<[string, Schema<unknown>]>();
+      for (const [key, valueSchema] of Object.entries<Schema<unknown>>(schema)) {
+        const result = valueSchema.internalSafeParse(value[key]);
+        if (result.success) {
           parsedObject[key] = result.data;
+        } else {
+          failedEntries.push([key, valueSchema]);
         }
-        if (strict) {
-          for (const key of Object.keys(value)) {
-            if (!(key in schema)) {
-              return { success: false as const };
-            }
-          }
-        }
+      }
+      const unrecognizedKeys = strict ? Object.keys(value).filter((key) => !(key in schema)) : [];
+      if (failedEntries.length === 0 && unrecognizedKeys.length === 0) {
         return { success: true, data: parsedObject as T };
-      })();
-      if (result.success) {
-        return result;
       }
       if (context !== undefined) {
-        for (const [key, valueSchema] of Object.entries(schema)) {
+        for (const [key, valueSchema] of failedEntries) {
           valueSchema.internalSafeParse(value[key], { path: [...context.path, key], errors: context.errors });
         }
-        if (strict) {
-          const unrecognizedKeys = Object.keys(value).filter((key) => !(key in schema));
-          if (unrecognizedKeys.length > 0) {
-            reportError(context, `Unrecognized keys: ${unrecognizedKeys.join(', ')}`);
-          }
+        if (unrecognizedKeys.length > 0) {
+          reportError(context, `Unrecognized keys: ${unrecognizedKeys.join(', ')}`);
         }
       }
       return { success: false };
@@ -240,29 +231,26 @@ function createTypeSchema<T>(description: Description, accepts: (value: unknown)
 }
 
 function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
-  return new Schema((value, context) => {
+  return new Schema((value, context): Result<T[]> => {
     if (!Array.isArray(value)) {
       return { success: false, mismatch: true };
     }
-    const result = (() => {
-      const parsedItems = new Array<T>();
-      for (const item of value) {
-        const result = schema.internalSafeParse(item);
-        if (!result.success) {
-          return result;
-        } else {
-          parsedItems.push(result.data);
-        }
+    const parsedItems = new Array<T>();
+    const failedIndexes = new Array<number>();
+    for (let index = 0; index < value.length; index++) {
+      const result = schema.internalSafeParse(value[index]);
+      if (result.success) {
+        parsedItems.push(result.data);
+      } else {
+        failedIndexes.push(index);
       }
+    }
+    if (failedIndexes.length === 0) {
       return { success: true, data: parsedItems };
-    })();
-    if (result.success) {
-      return result;
     }
     if (context !== undefined) {
-      for (let index = 0; index < value.length; index++) {
-        const item = value[index];
-        schema.internalSafeParse(item, { path: [...context.path, index], errors: context.errors });
+      for (const index of failedIndexes) {
+        schema.internalSafeParse(value[index], { path: [...context.path, index], errors: context.errors });
       }
     }
     return { success: false };
@@ -358,26 +346,25 @@ function createNumberSchema(): Schema<number> {
 }
 
 function createRecordSchema<T>(schema: Schema<T>): Schema<Record<string, T>> {
-  return new Schema<Record<string, T>>((record, context) => {
+  return new Schema<Record<string, T>>((record, context): Result<Record<string, T>> => {
     if (!isPlainObject(record)) {
       return { success: false, mismatch: true };
     }
-    const result = (() => {
-      const parsedObject: Record<string, T> = {};
-      for (const [key, value] of Object.entries(record)) {
-        const result = schema.internalSafeParse(value);
-        if (!result.success) {
-          return result;
-        }
+    const parsedObject: Record<string, T> = {};
+    const failedEntries = new Array<[string, unknown]>();
+    for (const [key, value] of Object.entries(record)) {
+      const result = schema.internalSafeParse(value);
+      if (result.success) {
         parsedObject[key] = result.data;
+      } else {
+        failedEntries.push([key, value]);
       }
+    }
+    if (failedEntries.length === 0) {
       return { success: true, data: parsedObject };
-    })();
-    if (result.success) {
-      return result;
     }
     if (context !== undefined) {
-      for (const [key, value] of Object.entries(record)) {
+      for (const [key, value] of failedEntries) {
         schema.internalSafeParse(value, { path: [...context.path, key], errors: context.errors });
       }
     }
@@ -397,7 +384,7 @@ function createStringSchema(): Schema<string> {
 
 function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema<T[K]> }): Schema<T> {
   const description = `array of length ${schema.length}`;
-  return new Schema((value, context) => {
+  return new Schema((value, context): Result<T> => {
     if (!Array.isArray(value)) {
       return { success: false, mismatch: true };
     }
@@ -405,27 +392,27 @@ function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema
       reportError(context, `Expected ${description}, got array of length ${value.length}`);
       return { success: false };
     }
-    const result = (() => {
-      const parsedItems: unknown[] = [];
-      let index = 0;
-      for (const itemSchema of schema) {
-        const result = itemSchema.internalSafeParse(value[index]);
-        if (!result.success) {
-          return result;
-        }
+    const parsedItems: unknown[] = [];
+    const failedEntries = new Array<[number, Schema<unknown>]>();
+    let index = 0;
+    for (const itemSchema of schema) {
+      const result = itemSchema.internalSafeParse(value[index]);
+      if (result.success) {
         parsedItems.push(result.data);
-        index++;
+      } else {
+        failedEntries.push([index, itemSchema]);
       }
+      index++;
+    }
+    if (failedEntries.length === 0) {
       return { success: true, data: parsedItems as T };
-    })();
-    if (result.success) {
-      return result;
     }
     if (context !== undefined) {
-      let index = 0;
-      for (const itemSchema of schema) {
-        itemSchema.internalSafeParse(value[index], { path: [...context.path, index], errors: context.errors });
-        index++;
+      for (const [failedIndex, itemSchema] of failedEntries) {
+        itemSchema.internalSafeParse(value[failedIndex], {
+          path: [...context.path, failedIndex],
+          errors: context.errors,
+        });
       }
     }
     return { success: false };

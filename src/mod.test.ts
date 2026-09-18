@@ -980,6 +980,21 @@ Deno.test('discriminated union schema reports ambiguous discriminator values', (
   assertThrows(() => unionSchema.parse(ambiguousData), 'Ambiguous discriminator value string "same"');
 });
 
+// Test that collecting errors visits only what failed
+Deno.test('a failing object parses the members that succeeded once', () => {
+  let siblingRuns = 0;
+  const sibling = z.string().transform((value) => {
+    siblingRuns++;
+    return value;
+  });
+  const schema = z.object({ good: sibling, bad: z.number(), alsoBad: z.number() });
+
+  const result = schema.safeParse({ good: 'x', bad: 'y', alsoBad: 'z' });
+  assert(result.success === false);
+  assert(result.errors.length === 2);
+  assert(siblingRuns === 1);
+});
+
 // Test refine
 Deno.test('refine checks a parsed value and states its own message', () => {
   const schema = z.string().refine((value) => value.length > 0, 'Name is required');
