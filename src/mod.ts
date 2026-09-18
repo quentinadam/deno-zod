@@ -127,21 +127,38 @@ export class Schema<T> {
     return result;
   }
 
+  /** Records a failure found inside the value, leaving a value the schema does not accept for its caller to name. */
+  #parseUnobserved(value: unknown, context: Context | undefined): Result<T> {
+    const result = this.internalSafeParse(value);
+    if (!result.success && result.mismatch !== true) {
+      this.internalSafeParse(value, context);
+    }
+    return result;
+  }
+
   transform<U>(transform: (value: T) => U): Schema<U> {
     return new Schema((value, context): Result<U> => {
       try {
-        const result = this.internalSafeParse(value);
+        const result = this.#parseUnobserved(value, context);
         if (result.success) {
           return { success: true, data: transform(result.data) };
-        }
-        if (result.mismatch !== true) {
-          this.internalSafeParse(value, context);
         }
         return result;
       } catch (error) {
         reportError(context, error instanceof Error ? error.message : String(error));
         return { success: false };
       }
+    }, this.#description);
+  }
+
+  refine(check: (value: T) => boolean, message: string | ((value: T) => string)): Schema<T> {
+    return new Schema((value, context) => {
+      const result = this.#parseUnobserved(value, context);
+      if (!result.success || check(result.data)) {
+        return result;
+      }
+      reportError(context, typeof message === 'string' ? message : message(result.data));
+      return { success: false };
     }, this.#description);
   }
 

@@ -980,6 +980,62 @@ Deno.test('discriminated union schema reports ambiguous discriminator values', (
   assertThrows(() => unionSchema.parse(ambiguousData), 'Ambiguous discriminator value string "same"');
 });
 
+// Test refine
+Deno.test('refine checks a parsed value and states its own message', () => {
+  const schema = z.string().refine((value) => value.length > 0, 'Name is required');
+
+  assert(schema.parse('John') === 'John');
+
+  const result = schema.safeParse('');
+  assert(result.success === false);
+  assert(result.errors.length === 1);
+  assert(result.message === 'Name is required');
+
+  const dateSchema = z.string().refine(
+    (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
+    (value) => `Invalid date: ${value}`,
+  );
+  const dateResult = dateSchema.safeParse('nope');
+  assert(dateResult.success === false);
+  assert(dateResult.message === 'Invalid date: nope');
+});
+
+// Test that a refinement failure is reported where the value it checked lives
+Deno.test('refine reports at the path of the value it checked', () => {
+  const schema = z.object({ name: z.string().refine((value) => value.length > 0, 'Name is required') });
+
+  const result = schema.safeParse({ name: '' });
+  assert(result.success === false);
+  assert(ensure(result.errors[0]).path.join('/') === 'name');
+  assert(result.message === 'Name is required at name');
+});
+
+// Test refine composing with transform
+Deno.test('refine composes with transform', () => {
+  const schema = z.string().transform((value) => value.trim()).refine((value) => value.length > 0, 'Name is required');
+
+  assert(schema.parse('  John  ') === 'John');
+
+  const result = schema.safeParse('   ');
+  assert(result.success === false);
+  assert(result.message === 'Name is required');
+});
+
+// Test how a refinement behaves as a union member
+Deno.test('refine counts as the schema having applied', () => {
+  const schema = z.union([z.string().refine((value) => value.length > 0, 'Name is required'), z.null()]);
+
+  // The refinement applied and failed, so the union reports it rather than listing its members
+  const refinedResult = schema.safeParse('');
+  assert(refinedResult.success === false);
+  assert(refinedResult.message === 'Name is required');
+
+  // A value the schema does not accept is a mismatch, so the union lists its members as before
+  const mismatchResult = schema.safeParse(1);
+  assert(mismatchResult.success === false);
+  assert(mismatchResult.message === 'Expected string | null, got number 1');
+});
+
 // Test path formatting
 Deno.test('formatPath formats paths in JavaScript notation', () => {
   assert(z.formatPath([]) === '');

@@ -38,6 +38,22 @@ z.union([z.object({ id: z.string() }), z.string()]).parse({ id: 1 });
 // ParseError: Expected string, got number 1 at id
 ```
 
+`refine` checks a parsed value and states its own message, rather than the schema's `Expected …, got …`. The message may
+be built from the value, and is reported at the path of the value it checked.
+
+```ts
+const NameSchema = z.string().transform((value) => value.trim()).refine(
+  (value) => value.length > 0,
+  'Name is required',
+);
+
+z.object({ name: NameSchema }).parse({ name: '  ' });
+// ParseError: Name is required at name
+```
+
+A schema that fails a refinement has applied to the value, so a union reports the refinement rather than listing its
+members.
+
 `describe` names a schema in its own message and where a union lists its members, for schemas whose own name says
 nothing.
 
