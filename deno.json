@@ -14,6 +14,7 @@
     "lineWidth": 120
   },
   "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitReturns": true
   },
