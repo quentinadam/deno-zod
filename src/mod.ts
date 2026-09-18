@@ -12,6 +12,17 @@ type Description = string | (() => string);
 /** Keyed by a symbol this module does not export, so that only the schemas in it can parse through one another. */
 const internalParse: unique symbol = Symbol('internalParse');
 
+/**
+ * The values a schema accepts, where they are a known finite set — a literal, or a union of schemas that all have one.
+ * A record keyed by such a schema knows every key it should hold, and can say which of them are missing.
+ */
+const enumerableValues: unique symbol = Symbol('enumerableValues');
+
+function withValues<T>(schema: Schema<T>, values: Iterable<unknown>) {
+  schema[enumerableValues] = new Set(values);
+  return schema;
+}
+
 const IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const MAX_INSPECTED_STRING_LENGTH = 32;
 const MAX_INSPECTED_KEYS = 3;
@@ -97,6 +108,19 @@ export class ParseError extends Error {
   }
 }
 
+function reportMember(
+  context: Context,
+  member: { key: string; schema: Schema<unknown>; value: unknown; missing: boolean },
+) {
+  const { key, schema, value, missing } = member;
+  const memberContext = { path: [...context.path, key], errors: context.errors };
+  if (missing) {
+    reportError(memberContext, `Expected ${schema.description}, got nothing`);
+  } else {
+    schema[internalParse](value, memberContext);
+  }
+}
+
 function reportError(context: Context | undefined, message: string) {
   if (context !== undefined) {
     context.errors.push({ path: context.path, message });
@@ -104,6 +128,8 @@ function reportError(context: Context | undefined, message: string) {
 }
 
 export class Schema<T> {
+  // Declared rather than defined: a schema that knows no set of values carries no slot for one.
+  declare [enumerableValues]?: ReadonlySet<unknown>;
   readonly #safeParseFn: (value: unknown, context?: Context) => Result<T>;
   readonly #description: Description;
 
@@ -119,7 +145,9 @@ export class Schema<T> {
 
   /** Renames the schema in its own message and where a union lists its members. */
   describe(description: string): Schema<T> {
-    return new Schema(this.#safeParseFn, description);
+    const schema = new Schema(this.#safeParseFn, description);
+    const values = this[enumerableValues];
+    return values === undefined ? schema : withValues(schema, values);
   }
 
   parse(value: unknown): T {
@@ -233,12 +261,7 @@ export class ObjectSchema<T extends Record<string, unknown>> extends Schema<T> {
       }
       if (context !== undefined) {
         for (const { key, valueSchema, missing } of failures) {
-          const keyContext = { path: [...context.path, key], errors: context.errors };
-          if (missing) {
-            reportError(keyContext, `Expected ${valueSchema.description}, got nothing`);
-          } else {
-            valueSchema[internalParse](value[key], keyContext);
-          }
+          reportMember(context, { key, schema: valueSchema, value: value[key], missing });
         }
         if (unrecognizedKeys.length > 0) {
           reportError(context, `Unrecognized keys: ${unrecognizedKeys.join(', ')}`);
@@ -347,9 +370,9 @@ function createLiteralSchema<T extends string | number | boolean | null | undefi
   if (isReadonlyArray(literal)) {
     return createUnionSchema(literal.map((item) => createLiteralSchema(item)));
   }
-  return createTypeSchema(
-    () => `literal ${JSON.stringify(literal)}`,
-    (value): value is T => value === literal,
+  return withValues(
+    createTypeSchema(() => `literal ${JSON.stringify(literal)}`, (value): value is T => value === literal),
+    [literal],
   );
 }
 
@@ -372,23 +395,18 @@ function createNullishSchema<T>(schema: Schema<T>): Schema<T | null | undefined>
 }
 
 function createNullSchema(): Schema<null> {
-  return createTypeSchema('null', (value): value is null => value === null);
+  return withValues(createTypeSchema('null', (value): value is null => value === null), [null]);
 }
 
 function createNumberSchema(): Schema<number> {
   return createTypeSchema('number', (value) => typeof value === 'number');
 }
 
-function createRecordSchema<T>(valueSchema: Schema<T>): Schema<Record<string, T>>;
-function createRecordSchema<K extends string, T>(
-  keySchema: Schema<K>,
+/** Parses the keys the value happens to have, each through the key schema where there is one. */
+function buildRecordSchema<T>(
+  keySchema: Schema<string> | undefined,
   valueSchema: Schema<T>,
-): Schema<string extends K ? Record<string, T> : Partial<Record<K, T>>>;
-function createRecordSchema<K extends string, T>(
-  ...schemas: [Schema<T>] | [Schema<K>, Schema<T>]
-): Schema<Record<string, T>> | Schema<string extends K ? Record<string, T> : Partial<Record<K, T>>> {
-  const keySchema = schemas.length === 2 ? schemas[0] : undefined;
-  const valueSchema = schemas.length === 2 ? schemas[1] : schemas[0];
+): Schema<Record<string, T>> {
   return new Schema((record, context): Result<Record<string, T>> => {
     if (!isPlainObject(record)) {
       return { success: false, mismatch: true };
@@ -423,6 +441,70 @@ function createRecordSchema<K extends string, T>(
     }
     return { success: false };
   }, 'object');
+}
+
+/** Parses the keys the key schema knows about, every one of which must be there, and no others. */
+function buildExhaustiveRecordSchema<T>(
+  keys: ReadonlySet<string>,
+  valueSchema: Schema<T>,
+): Schema<Record<string, T>> {
+  return new Schema((record, context): Result<Record<string, T>> => {
+    if (!isPlainObject(record)) {
+      return { success: false, mismatch: true };
+    }
+    const parsedObject: Record<string, T> = {};
+    const failures = new Array<{ key: string; missing: boolean }>();
+    for (const key of keys) {
+      const result = valueSchema[internalParse](record[key]);
+      if (result.success) {
+        parsedObject[key] = result.data;
+      } else {
+        failures.push({ key, missing: result.mismatch === true && !(key in record) });
+      }
+    }
+    const unrecognizedKeys = Object.keys(record).filter((key) => !keys.has(key));
+    if (failures.length === 0 && unrecognizedKeys.length === 0) {
+      return { success: true, data: parsedObject };
+    }
+    if (context !== undefined) {
+      for (const { key, missing } of failures) {
+        reportMember(context, { key, schema: valueSchema, value: record[key], missing });
+      }
+      if (unrecognizedKeys.length > 0) {
+        reportError(context, `Unrecognized keys: ${unrecognizedKeys.join(', ')}`);
+      }
+    }
+    return { success: false };
+  }, 'object');
+}
+
+function createRecordSchema<T>(valueSchema: Schema<T>): Schema<Record<string, T>>;
+function createRecordSchema<K extends string, T>(keySchema: Schema<K>, valueSchema: Schema<T>): Schema<Record<K, T>>;
+function createRecordSchema<K extends string, T>(
+  ...schemas: [Schema<T>] | [Schema<K>, Schema<T>]
+): Schema<Record<string, T>> | Schema<Record<K, T>> {
+  if (schemas.length === 1) {
+    return buildRecordSchema(undefined, schemas[0]);
+  }
+  const [keySchema, valueSchema] = schemas;
+  const values = keySchema[enumerableValues];
+  if (values === undefined) {
+    return buildRecordSchema(keySchema, valueSchema);
+  }
+  const keys = new Set([...values].filter((value) => typeof value === 'string'));
+  return buildExhaustiveRecordSchema(keys, valueSchema);
+}
+
+/** A record of the same keys, none of which has to be there. */
+function createPartialRecordSchema<K extends string, T>(
+  keySchema: Schema<K>,
+  valueSchema: Schema<T>,
+): Schema<string extends K ? Record<string, T> : Partial<Record<K, T>>> {
+  // A key schema that bounds nothing keeps the index signature, which says as much as a partial of it and says it of
+  // the values too. Which of the two it is cannot be settled while K is a parameter, so the claim is made here.
+  return buildRecordSchema(keySchema, valueSchema) as Schema<
+    string extends K ? Record<string, T> : Partial<Record<K, T>>
+  >;
 }
 
 function createStrictObjectSchema<T extends Record<string, unknown>>(
@@ -473,12 +555,23 @@ function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema
 }
 
 function createUndefinedSchema(): Schema<undefined> {
-  return createTypeSchema('undefined', (value): value is undefined => value === undefined);
+  return withValues(createTypeSchema('undefined', (value): value is undefined => value === undefined), [undefined]);
 }
 
 function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schema<T[K]> }): Schema<T[number]> {
   const description = () => [...new Set(schemas.map((schema) => schema.description))].join(' | ');
-  return new Schema<T[number]>((value, context) => {
+  const values = (() => {
+    const values = new Array<unknown>();
+    for (const schema of schemas) {
+      const schemaValues = schema[enumerableValues];
+      if (schemaValues === undefined) {
+        return undefined;
+      }
+      values.push(...schemaValues);
+    }
+    return values;
+  })();
+  const schema = new Schema<T[number]>((value, context) => {
     const applicableSchemas = new Array<Schema<T[number]>>();
     for (const schema of schemas) {
       const result = schema[internalParse](value);
@@ -498,6 +591,7 @@ function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schem
     }
     return { success: false, mismatch: true };
   }, description);
+  return values === undefined ? schema : withValues(schema, values);
 }
 
 function createUnknownSchema(): Schema<unknown> {
@@ -521,6 +615,7 @@ export {
   createNumberSchema as number,
   createObjectSchema as object,
   createOptionalSchema as optional,
+  createPartialRecordSchema as partialRecord,
   createRecordSchema as record,
   createStrictObjectSchema as strictObject,
   createStringSchema as string,

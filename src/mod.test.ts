@@ -986,9 +986,40 @@ Deno.test('discriminated union schema reports ambiguous discriminator values', (
   assertThrows(() => unionSchema.parse(ambiguousData), 'Ambiguous discriminator value string "same"');
 });
 
-// Test record with a key schema
-Deno.test('record checks its keys against a key schema', () => {
+// Test record with a key schema of a bounded set of keys
+Deno.test('record with bounded keys holds every one of them', () => {
   const schema = z.record(z.literal(['EUR', 'USD'] as const), z.number());
+
+  const parsed = schema.parse({ EUR: 100, USD: 50 });
+  // Every key the schema knows is there, so the result type has no optional members
+  const usd: number = parsed.USD;
+  assert(parsed.EUR === 100 && usd === 50);
+
+  const missing = schema.safeParse({ EUR: 100 });
+  assert(missing.success === false);
+  assert(missing.message === 'Expected number, got nothing at USD');
+
+  const unrecognized = schema.safeParse({ EUR: 100, USD: 50, GBP: 25 });
+  assert(unrecognized.success === false);
+  assert(unrecognized.message === 'Unrecognized keys: GBP');
+
+  const badValue = schema.safeParse({ EUR: 'x', USD: 50 });
+  assert(badValue.success === false);
+  assert(badValue.message === 'Expected number, got string "x" at EUR');
+});
+
+// Test that an optional value schema lets a bounded key be left out
+Deno.test('record with bounded keys accepts a missing key its value schema allows', () => {
+  const schema = z.record(z.literal(['EUR', 'USD'] as const), z.number().optional());
+
+  const parsed = schema.parse({ EUR: 100 });
+  assert(parsed.EUR === 100);
+  assert(parsed.USD === undefined);
+});
+
+// Test partialRecord
+Deno.test('partialRecord checks its keys without requiring them', () => {
+  const schema = z.partialRecord(z.literal(['EUR', 'USD'] as const), z.number());
 
   const parsed = schema.parse({ EUR: 100 });
   assert(parsed.EUR === 100);
@@ -1002,6 +1033,16 @@ Deno.test('record checks its keys against a key schema', () => {
   const badValue = schema.safeParse({ EUR: 'x' });
   assert(badValue.success === false);
   assert(badValue.message === 'Expected number, got string "x" at EUR');
+});
+
+// Test that one argument means the same as a key schema that bounds nothing
+Deno.test('record of one argument is record of string keys', () => {
+  const oneArgument: z.Schema<Record<string, number>> = z.record(z.number());
+  const stringKeys: z.Schema<Record<string, number>> = z.record(z.string(), z.number());
+
+  const value = { a: 1, b: 2 };
+  assert(JSON.stringify(oneArgument.parse(value)) === JSON.stringify(stringKeys.parse(value)));
+  assert(JSON.stringify(oneArgument.parse({})) === JSON.stringify(stringKeys.parse({})));
 });
 
 // Test that a key schema of no fixed set of keys keeps the index signature
