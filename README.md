@@ -67,6 +67,10 @@ z.union([IbanSchema, z.null()]).parse(1);
 // ParseError: Expected IBAN | null, got number 1
 ```
 
+Parsing succeeds in a single pass that records nothing; a value that fails is parsed again to collect every error with
+its path. A `transform` may therefore run several times for a value that fails to parse, so keep it free of side
+effects.
+
 [ci-image]: https://img.shields.io/github/actions/workflow/status/quentinadam/deno-zod/ci.yml?branch=main&logo=github&style=flat-square
 [ci-url]: https://github.com/quentinadam/deno-zod/actions/workflows/ci.yml
 [npm-image]: https://img.shields.io/npm/v/@quentinadam/zod.svg?style=flat-square
