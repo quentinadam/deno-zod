@@ -22,10 +22,16 @@ function assertThrows(fn: () => void, messageIncludes?: string): unknown {
 Deno.test('inspectValue returns correct type strings', () => {
   assert(z.inspectValue(undefined) === 'undefined');
   assert(z.inspectValue(null) === 'null');
-  assert(z.inspectValue([]) === 'array');
-  assert(z.inspectValue([1, 2, 3]) === 'array');
+  assert(z.inspectValue([]) === 'array of length 0');
+  assert(z.inspectValue([1, 2, 3]) === 'array of length 3');
   assert(z.inspectValue({}) === 'object');
+  assert(z.inspectValue({ a: 1, b: 2 }) === 'object with keys a, b');
+  assert(z.inspectValue({ a: 1, b: 2, c: 3, d: 4 }) === 'object with keys a, b, c... 1 more key');
+  assert(z.inspectValue({ a: 1, b: 2, c: 3, d: 4, e: 5 }) === 'object with keys a, b, c... 2 more keys');
+  assert(z.inspectValue(new Date(0)) === 'instance of Date');
   assert(z.inspectValue('hello') === 'string "hello"');
+  assert(z.inspectValue('x'.repeat(40)) === `string ${JSON.stringify('x'.repeat(32))}... 8 more characters`);
+  assert(z.inspectValue('x'.repeat(33)) === `string ${JSON.stringify('x'.repeat(32))}... 1 more character`);
   assert(z.inspectValue(123) === 'number 123');
   assert(z.inspectValue(true) === 'boolean true');
   assert(z.inspectValue(BigInt(123)) === 'bigint 123');
@@ -511,8 +517,8 @@ Deno.test('nullish function creates nullable and optional schemas', () => {
   assert(schema.parse(null) === null);
   assert(schema.parse(undefined) === undefined);
 
-  assertThrows(() => schema.parse(123), 'Expected null | undefined | string, got number 123');
-  assertThrows(() => schema.parse(true), 'Expected null | undefined | string, got boolean true');
+  assertThrows(() => schema.parse(123), 'Expected undefined | null | string, got number 123');
+  assertThrows(() => schema.parse(true), 'Expected undefined | null | string, got boolean true');
 
   // Test with other types
   const objectSchema = z.nullish(z.object({ id: z.number() }));
@@ -580,7 +586,7 @@ Deno.test('nullish schema works with transform', () => {
   assert(schema.parse(null) === null);
   assert(schema.parse(undefined) === undefined);
 
-  assertThrows(() => schema.parse(123), 'Expected null | undefined | string, got number 123');
+  assertThrows(() => schema.parse(123), 'Expected undefined | null | string, got number 123');
 });
 
 // Test empty object validation
@@ -759,7 +765,7 @@ Deno.test('optional fields in objects', () => {
       optional: 'maybe',
       nullable: null,
       nullish: null,
-    }), 'Expected string, got undefined');
+    }), 'Expected string, got nothing');
 });
 
 // Test that parse creates new objects (doesn't maintain referential equality)
@@ -978,6 +984,195 @@ Deno.test('discriminated union schema reports ambiguous discriminator values', (
   assert(ensure(result.errors[0]).message === 'Ambiguous discriminator value string "same"');
 
   assertThrows(() => unionSchema.parse(ambiguousData), 'Ambiguous discriminator value string "same"');
+});
+
+// Test record with a key schema of a bounded set of keys
+Deno.test('record with bounded keys holds every one of them', () => {
+  const schema = z.record(z.literal(['EUR', 'USD'] as const), z.number());
+
+  const parsed = schema.parse({ EUR: 100, USD: 50 });
+  // Every key the schema knows is there, so the result type has no optional members
+  const usd: number = parsed.USD;
+  assert(parsed.EUR === 100 && usd === 50);
+
+  const missing = schema.safeParse({ EUR: 100 });
+  assert(missing.success === false);
+  assert(missing.message === 'Expected number, got nothing at USD');
+
+  const unrecognized = schema.safeParse({ EUR: 100, USD: 50, GBP: 25 });
+  assert(unrecognized.success === false);
+  assert(unrecognized.message === 'Unrecognized keys: GBP');
+
+  const badValue = schema.safeParse({ EUR: 'x', USD: 50 });
+  assert(badValue.success === false);
+  assert(badValue.message === 'Expected number, got string "x" at EUR');
+});
+
+// Test that an optional value schema lets a bounded key be left out
+Deno.test('record with bounded keys accepts a missing key its value schema allows', () => {
+  const schema = z.record(z.literal(['EUR', 'USD'] as const), z.number().optional());
+
+  const parsed = schema.parse({ EUR: 100 });
+  assert(parsed.EUR === 100);
+  assert(parsed.USD === undefined);
+});
+
+// Test partialRecord
+Deno.test('partialRecord checks its keys without requiring them', () => {
+  const schema = z.partialRecord(z.literal(['EUR', 'USD'] as const), z.number());
+
+  const parsed = schema.parse({ EUR: 100 });
+  assert(parsed.EUR === 100);
+  // A key of the right type need not be there, so the result is partial
+  assert(parsed.USD === undefined);
+
+  const badKey = schema.safeParse({ GBP: 1 });
+  assert(badKey.success === false);
+  assert(badKey.message === 'Invalid key: Expected literal "EUR" | literal "USD", got string "GBP" at GBP');
+
+  const badValue = schema.safeParse({ EUR: 'x' });
+  assert(badValue.success === false);
+  assert(badValue.message === 'Expected number, got string "x" at EUR');
+});
+
+// Test that one argument means the same as a key schema that bounds nothing
+Deno.test('record of one argument is record of string keys', () => {
+  const oneArgument: z.Schema<Record<string, number>> = z.record(z.number());
+  const stringKeys: z.Schema<Record<string, number>> = z.record(z.string(), z.number());
+
+  const value = { a: 1, b: 2 };
+  assert(JSON.stringify(oneArgument.parse(value)) === JSON.stringify(stringKeys.parse(value)));
+  assert(JSON.stringify(oneArgument.parse({})) === JSON.stringify(stringKeys.parse({})));
+});
+
+// Test that a key schema of no fixed set of keys keeps the index signature
+Deno.test('record with string keys is not partial', () => {
+  const schema = z.record(z.string().transform((key) => key.toLowerCase()), z.string());
+
+  const parsed = schema.parse({ 'Content-Type': 'application/json' });
+  // A string key stands for any key, so the values are what they parsed to rather than possibly absent
+  const values: string[] = Object.values(parsed);
+  assert(values.length === 1);
+  assert(parsed['content-type'] === 'application/json');
+});
+
+// Test that the key schema parses the key, rather than only checking it
+Deno.test('record parses its keys through the key schema', () => {
+  const schema = z.record(z.string().transform((key) => key.toUpperCase()), z.number());
+
+  assert(JSON.stringify(schema.parse({ a: 1, b: 2 })) === '{"A":1,"B":2}');
+});
+
+// Test that collecting errors visits only what failed
+Deno.test('a failing object parses the members that succeeded once', () => {
+  let siblingRuns = 0;
+  const sibling = z.string().transform((value) => {
+    siblingRuns++;
+    return value;
+  });
+  const schema = z.object({ good: sibling, bad: z.number(), alsoBad: z.number() });
+
+  const result = schema.safeParse({ good: 'x', bad: 'y', alsoBad: 'z' });
+  assert(result.success === false);
+  assert(result.errors.length === 2);
+  assert(siblingRuns === 1);
+});
+
+// Test that an absent property is told apart from one that is there and undefined
+Deno.test('a missing property is reported as missing', () => {
+  const schema = z.object({ name: z.string(), note: z.string().optional() });
+
+  const missing = schema.safeParse({});
+  assert(missing.success === false);
+  assert(missing.message === 'Expected string, got nothing at name');
+
+  const explicit = schema.safeParse({ name: undefined });
+  assert(explicit.success === false);
+  assert(explicit.message === 'Expected string, got undefined at name');
+
+  // An optional member accepts an absent key, so it is not a failure at all
+  assert(schema.parse({ name: 'John' }).name === 'John');
+});
+
+// Test that an optional member is left out rather than held as undefined
+Deno.test('an optional member absent from the value is absent from the result', () => {
+  const schema = z.object({ name: z.string(), note: z.string().optional(), tag: z.string().nullish() });
+
+  const parsed = schema.parse({ name: 'John' });
+  assert(JSON.stringify(Object.keys(parsed)) === '["name"]');
+  assert(parsed.note === undefined);
+
+  // The type says as much: the optional members may be left out of a value of it
+  const typed: { name: string; note?: string; tag?: string | null } = parsed;
+  assert(typed.name === 'John');
+
+  // A member that is there keeps its value, and one given undefined is still left out
+  assert(JSON.stringify(schema.parse({ name: 'John', note: 'hi' })) === '{"name":"John","note":"hi"}');
+  assert(JSON.stringify(schema.parse({ name: 'John', note: undefined })) === '{"name":"John"}');
+});
+
+// Test that a member whose own type is undefined is kept, since nothing says it may be left out
+Deno.test('a member that parses to undefined without being optional is kept', () => {
+  const schema = z.object({ nothing: z.undefined() });
+
+  const parsed = schema.parse({ nothing: undefined });
+  assert(JSON.stringify(Object.keys(parsed)) === '["nothing"]');
+});
+
+// Test refine
+Deno.test('refine checks a parsed value and states its own message', () => {
+  const schema = z.string().refine((value) => value.length > 0, 'Name is required');
+
+  assert(schema.parse('John') === 'John');
+
+  const result = schema.safeParse('');
+  assert(result.success === false);
+  assert(result.errors.length === 1);
+  assert(result.message === 'Name is required');
+
+  const dateSchema = z.string().refine(
+    (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
+    (value) => `Invalid date: ${value}`,
+  );
+  const dateResult = dateSchema.safeParse('nope');
+  assert(dateResult.success === false);
+  assert(dateResult.message === 'Invalid date: nope');
+});
+
+// Test that a refinement failure is reported where the value it checked lives
+Deno.test('refine reports at the path of the value it checked', () => {
+  const schema = z.object({ name: z.string().refine((value) => value.length > 0, 'Name is required') });
+
+  const result = schema.safeParse({ name: '' });
+  assert(result.success === false);
+  assert(ensure(result.errors[0]).path.join('/') === 'name');
+  assert(result.message === 'Name is required at name');
+});
+
+// Test refine composing with transform
+Deno.test('refine composes with transform', () => {
+  const schema = z.string().transform((value) => value.trim()).refine((value) => value.length > 0, 'Name is required');
+
+  assert(schema.parse('  John  ') === 'John');
+
+  const result = schema.safeParse('   ');
+  assert(result.success === false);
+  assert(result.message === 'Name is required');
+});
+
+// Test how a refinement behaves as a union member
+Deno.test('refine counts as the schema having applied', () => {
+  const schema = z.union([z.string().refine((value) => value.length > 0, 'Name is required'), z.null()]);
+
+  // The refinement applied and failed, so the union reports it rather than listing its members
+  const refinedResult = schema.safeParse('');
+  assert(refinedResult.success === false);
+  assert(refinedResult.message === 'Name is required');
+
+  // A value the schema does not accept is a mismatch, so the union lists its members as before
+  const mismatchResult = schema.safeParse(1);
+  assert(mismatchResult.success === false);
+  assert(mismatchResult.message === 'Expected string | null, got number 1');
 });
 
 // Test path formatting
