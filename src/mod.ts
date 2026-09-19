@@ -133,7 +133,8 @@ export class Schema<T> {
 
   constructor(
     safeParseFn: (value: unknown, context?: Context) => Result<T>,
-    { description = 'value', values }: { description?: Description; values?: Iterable<T> | undefined } = {},
+    description: Description = 'value',
+    values?: Iterable<T> | undefined,
   ) {
     this.#safeParseFn = safeParseFn;
     this.#description = description;
@@ -149,7 +150,7 @@ export class Schema<T> {
 
   /** Renames the schema in its own message and where a union lists its members. */
   describe(description: string): Schema<T> {
-    return new Schema(this.#safeParseFn, { description, values: this[enumerableValues] });
+    return new Schema(this.#safeParseFn, description, this[enumerableValues]);
   }
 
   parse(value: unknown): T {
@@ -207,7 +208,7 @@ export class Schema<T> {
         reportError(context, error instanceof Error ? error.message : String(error));
         return { success: false };
       }
-    }, { description: this.#description });
+    }, this.#description);
   }
 
   refine(check: (value: T) => boolean, message: string | ((value: T) => string)): Schema<T> {
@@ -218,7 +219,7 @@ export class Schema<T> {
       }
       reportError(context, typeof message === 'string' ? message : message(result.data));
       return { success: false };
-    }, { description: this.#description });
+    }, this.#description);
   }
 
   optional(): OptionalSchema<T> {
@@ -240,7 +241,7 @@ export class OptionalSchema<T> extends Schema<T | undefined> {
 
   constructor(schema: Schema<T>) {
     const union = createUnionSchema([createUndefinedSchema(), schema]);
-    super((value, context) => union[internalParse](value, context), { description: () => union.description });
+    super((value, context) => union[internalParse](value, context), () => union.description);
   }
 }
 
@@ -293,7 +294,7 @@ export class ObjectSchema<S extends Record<string, Schema<unknown>>> extends Sch
         }
       }
       return { success: false };
-    }, { description: 'object' });
+    }, 'object');
     this.#shape = shape;
   }
 }
@@ -305,14 +306,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** A schema that accepts whatever its guard accepts, which is every schema whose contents it does not then parse. */
 function createTypeSchema<T>(
   accepts: (value: unknown) => value is T,
-  options: { description: Description; values?: Iterable<T> },
+  description: Description,
+  values?: Iterable<T>,
 ): Schema<T> {
-  return new Schema<T>((value) => {
-    if (!accepts(value)) {
-      return { success: false, mismatch: true };
-    }
-    return { success: true, data: value };
-  }, options);
+  return new Schema<T>(
+    (value) => {
+      if (!accepts(value)) {
+        return { success: false, mismatch: true };
+      }
+      return { success: true, data: value };
+    },
+    description,
+    values,
+  );
 }
 
 function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
@@ -339,15 +345,15 @@ function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
       }
     }
     return { success: false };
-  }, { description: 'array' });
+  }, 'array');
 }
 
 function createBigIntSchema(): Schema<bigint> {
-  return createTypeSchema((value) => typeof value === 'bigint', { description: 'bigint' });
+  return createTypeSchema((value) => typeof value === 'bigint', 'bigint');
 }
 
 function createBooleanSchema(): Schema<boolean> {
-  return createTypeSchema((value) => typeof value === 'boolean', { description: 'boolean' });
+  return createTypeSchema((value) => typeof value === 'boolean', 'boolean');
 }
 
 function createDateSchema(): Schema<Date> {
@@ -376,14 +382,12 @@ function createDiscriminatedUnionSchema<
       return { success: false };
     }
     return discriminatedSchema[internalParse](value, context);
-  }, { description: 'object' });
+  }, 'object');
 }
 
 // deno-lint-ignore no-explicit-any
 function createInstanceofSchema<T>(schema: { new (...args: any[]): T }): Schema<T> {
-  return createTypeSchema((value): value is T => value instanceof schema, {
-    description: `instance of ${schema.name}`,
-  });
+  return createTypeSchema((value): value is T => value instanceof schema, `instance of ${schema.name}`);
 }
 
 function createLazySchema<T>(fn: () => Schema<T>): Schema<T> {
@@ -400,10 +404,9 @@ function createLiteralSchema<T extends string | number | boolean | null | undefi
   if (isReadonlyArray(literal)) {
     return createUnionSchema(literal.map((item) => createLiteralSchema(item)));
   }
-  return createTypeSchema((value): value is T => value === literal, {
-    description: () => `literal ${JSON.stringify(literal)}`,
-    values: [literal],
-  });
+  return createTypeSchema((value): value is T => value === literal, () => `literal ${JSON.stringify(literal)}`, [
+    literal,
+  ]);
 }
 
 function createObjectSchema<S extends Record<string, Schema<unknown>>>(shape: S): ObjectSchema<S> {
@@ -423,11 +426,11 @@ function createNullishSchema<T>(schema: Schema<T>): OptionalSchema<T | null> {
 }
 
 function createNullSchema(): Schema<null> {
-  return createTypeSchema((value): value is null => value === null, { description: 'null', values: [null] });
+  return createTypeSchema((value): value is null => value === null, 'null', [null]);
 }
 
 function createNumberSchema(): Schema<number> {
-  return createTypeSchema((value) => typeof value === 'number', { description: 'number' });
+  return createTypeSchema((value) => typeof value === 'number', 'number');
 }
 
 /** Parses the keys the value happens to have, each through the key schema where there is one. */
@@ -468,7 +471,7 @@ function buildRecordSchema<T>(
       }
     }
     return { success: false };
-  }, { description: 'object' });
+  }, 'object');
 }
 
 /** Parses the keys the key schema knows about, every one of which must be there, and no others. */
@@ -503,7 +506,7 @@ function buildExhaustiveRecordSchema<T>(
       }
     }
     return { success: false };
-  }, { description: 'object' });
+  }, 'object');
 }
 
 function createRecordSchema<T>(valueSchema: Schema<T>): Schema<Record<string, T>>;
@@ -539,7 +542,7 @@ function createStrictObjectSchema<S extends Record<string, Schema<unknown>>>(sha
 }
 
 function createStringSchema(): Schema<string> {
-  return createTypeSchema((value) => typeof value === 'string', { description: 'string' });
+  return createTypeSchema((value) => typeof value === 'string', 'string');
 }
 
 function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema<T[K]> }): Schema<T> {
@@ -576,14 +579,11 @@ function createTupleSchema<T extends unknown[]>(schema: { [K in keyof T]: Schema
       }
     }
     return { success: false };
-  }, { description });
+  }, description);
 }
 
 function createUndefinedSchema(): Schema<undefined> {
-  return createTypeSchema((value): value is undefined => value === undefined, {
-    description: 'undefined',
-    values: [undefined],
-  });
+  return createTypeSchema((value): value is undefined => value === undefined, 'undefined', [undefined]);
 }
 
 function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schema<T[K]> }): Schema<T[number]> {
@@ -599,32 +599,36 @@ function createUnionSchema<T extends unknown[]>(schemas: { [K in keyof T]: Schem
     }
     return values;
   })();
-  return new Schema<T[number]>((value, context) => {
-    const applicableSchemas = new Array<Schema<T[number]>>();
-    for (const schema of schemas) {
-      const result = schema[internalParse](value);
-      if (result.success) {
-        return result;
+  return new Schema<T[number]>(
+    (value, context) => {
+      const applicableSchemas = new Array<Schema<T[number]>>();
+      for (const schema of schemas) {
+        const result = schema[internalParse](value);
+        if (result.success) {
+          return result;
+        }
+        if (result.mismatch !== true) {
+          applicableSchemas.push(schema);
+        }
       }
-      if (result.mismatch !== true) {
-        applicableSchemas.push(schema);
+      // A member that rejected the value outright says nothing the union's own message doesn't, so member errors are
+      // reported only where one member is the single one the value could have been meant for.
+      const [applicableSchema] = applicableSchemas;
+      if (applicableSchema !== undefined && applicableSchemas.length === 1) {
+        applicableSchema[internalParse](value, context);
+        return { success: false };
       }
-    }
-    // A member that rejected the value outright says nothing the union's own message doesn't, so member errors are
-    // reported only where one member is the single one the value could have been meant for.
-    const [applicableSchema] = applicableSchemas;
-    if (applicableSchema !== undefined && applicableSchemas.length === 1) {
-      applicableSchema[internalParse](value, context);
-      return { success: false };
-    }
-    return { success: false, mismatch: true };
-  }, { description, values });
+      return { success: false, mismatch: true };
+    },
+    description,
+    values,
+  );
 }
 
 function createUnknownSchema(): Schema<unknown> {
   return new Schema<unknown>((value) => {
     return { success: true, data: value };
-  }, { description: 'unknown' });
+  }, 'unknown');
 }
 
 export {
