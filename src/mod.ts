@@ -241,7 +241,11 @@ export class OptionalSchema<T> extends Schema<T | undefined> {
 
   constructor(schema: Schema<T>) {
     const union = createUnionSchema([createUndefinedSchema(), schema]);
-    super((value, context) => union[internalParse](value, context), () => union.description);
+    super(
+      (value, context) => union[internalParse](value, context),
+      () => union.description,
+      union[enumerableValues],
+    );
   }
 }
 
