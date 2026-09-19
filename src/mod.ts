@@ -106,6 +106,14 @@ export class ParseError extends Error {
   }
 }
 
+/**
+ * Rejects the value being parsed, with the message the failure is reported under. What a schema throws otherwise is
+ * taken to be a fault of its own rather than of the value, and is left to the caller.
+ */
+export function fail(message: string): never {
+  throw new ParseError(message, [{ path: [], message }]);
+}
+
 function reportMember(
   context: Context,
   member: { key: string; schema: Schema<unknown>; value: unknown; missing: boolean },
@@ -205,6 +213,20 @@ export class Schema<T> {
         }
         return result;
       } catch (error) {
+        // A parse that failed inside keeps its own paths, under this one.
+        if (error instanceof ParseError) {
+          if (context !== undefined) {
+            for (const { path, message } of error.errors) {
+              context.errors.push({ path: [...context.path, ...path], message });
+            }
+          }
+          return { success: false };
+        }
+        // A schema rejects a value by throwing, so a throw is a rejection — except of the two kinds that say the
+        // schema itself is at fault, which a value should not be blamed for and a caller should hear about.
+        if (error instanceof TypeError || error instanceof ReferenceError) {
+          throw error;
+        }
         reportError(context, error instanceof Error ? error.message : String(error));
         return { success: false };
       }

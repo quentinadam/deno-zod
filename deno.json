@@ -1,6 +1,6 @@
 {
   "name": "@quentinadam/zod",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A simple library to parse data, inspired by zod",
   "license": "MIT",
   "author": "Quentin Adam",

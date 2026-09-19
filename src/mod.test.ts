@@ -1175,6 +1175,64 @@ Deno.test('refine counts as the schema having applied', () => {
   assert(mismatchResult.message === 'Expected string | null, got number 1');
 });
 
+// Test fail
+Deno.test('fail rejects the value with its own message', () => {
+  const schema = z.string().transform((value) => {
+    if (value.length > 3) {
+      return value;
+    }
+    return z.fail(`Too short: ${value}`);
+  });
+
+  assert(schema.parse('long enough') === 'long enough');
+
+  const result = schema.safeParse('ab');
+  assert(result.success === false);
+  assert(result.errors.length === 1);
+  assert(result.message === 'Too short: ab');
+});
+
+// Test that a rejection is reported where the value it rejected sits
+Deno.test('fail reports at the path of the value it rejected', () => {
+  const schema = z.object({
+    name: z.unknown().transform((value) => z.fail(`Never any good: ${z.inspectValue(value)}`)),
+  });
+
+  const result = schema.safeParse({ name: 'x' });
+  assert(result.success === false);
+  assert(result.message === 'Never any good: string "x" at name');
+});
+
+// Test that a parse inside a transform keeps the paths it failed at
+Deno.test('a parse inside a transform keeps its own paths', () => {
+  const inner = z.object({ inner: z.object({ id: z.string() }) });
+  const schema = z.object({ outer: z.unknown().transform((value) => inner.parse(value)) });
+
+  const result = schema.safeParse({ outer: { inner: { id: 1 } } });
+  assert(result.success === false);
+  assert(ensure(result.errors[0]).path.join('/') === 'outer/inner/id');
+  assert(result.message === 'Expected string, got number 1 at outer.inner.id');
+});
+
+// Test that a fault of the schema's own is not reported as a failure of the value
+Deno.test('a transform at fault is left to the caller', () => {
+  const schema = z.string().transform((value) => (undefined as unknown as { x: string }).x + value);
+
+  const thrown = assertThrows(() => schema.safeParse('a'));
+  assert(thrown instanceof TypeError);
+});
+
+// Test that anything else thrown is still a rejection, as a library refusing the value throws
+Deno.test('a transform still rejects by throwing', () => {
+  const schema = z.string().transform((value) => {
+    throw new RangeError(`Out of range: ${value}`);
+  });
+
+  const result = schema.safeParse('x');
+  assert(result.success === false);
+  assert(result.message === 'Out of range: x');
+});
+
 // Test path formatting
 Deno.test('formatPath formats paths in JavaScript notation', () => {
   assert(z.formatPath([]) === '');

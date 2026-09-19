@@ -54,6 +54,23 @@ z.object({ name: NameSchema }).parse({ name: '  ' });
 A schema that fails a refinement has applied to the value, so a union reports the refinement rather than listing its
 members.
 
+A schema rejects a value by throwing, and `fail` says so where a value cannot be converted rather than checked:
+
+```ts
+const UrlSchema = z.string().transform((value) => {
+  try {
+    return new URL(value);
+  } catch {
+    return z.fail(`Invalid URL: ${value}`);
+  }
+});
+```
+
+A `TypeError` or a `ReferenceError` is left to the caller instead. Those say the schema is at fault rather than the
+value, and reporting them as invalid input hides the bug behind a message about the input. Anything else a transform
+throws is a rejection, so a library refusing a value keeps working as it did. A `parse` that fails inside a transform
+keeps its own paths, under the path of the transform.
+
 `describe` names a schema in its own message and where a union lists its members, for schemas whose own name says
 nothing.
 
