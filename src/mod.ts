@@ -157,8 +157,8 @@ export class Schema<T> {
   }
 
   /** Renames the schema in its own message and where a union lists its members. */
-  describe(description: string): Schema<T> {
-    return new Schema(this.#safeParseFn, description, this[enumerableValues]);
+  describe(description: string): WrappedSchema<this, T> {
+    return new WrappedSchema(this, this.#safeParseFn, description, this[enumerableValues]);
   }
 
   parse(value: unknown): T {
@@ -204,8 +204,8 @@ export class Schema<T> {
     return result;
   }
 
-  transform<U>(transform: (value: T) => U): Schema<U> {
-    return new Schema((value, context): Result<U> => {
+  transform<U>(transform: (value: T) => U): WrappedSchema<this, U> {
+    return new WrappedSchema(this, (value, context): Result<U> => {
       try {
         const result = this.#parseUnobserved(value, context);
         if (result.success) {
@@ -233,8 +233,8 @@ export class Schema<T> {
     }, this.#description);
   }
 
-  refine(check: (value: T) => boolean, message: string | ((value: T) => string)): Schema<T> {
-    return new Schema((value, context) => {
+  refine(check: (value: T) => boolean, message: string | ((value: T) => string)): WrappedSchema<this, T> {
+    return new WrappedSchema(this, (value, context) => {
       const result = this.#parseUnobserved(value, context);
       if (!result.success || check(result.data)) {
         return result;
@@ -244,8 +244,8 @@ export class Schema<T> {
     }, this.#description);
   }
 
-  optional(): OptionalSchema<T> {
-    return createOptionalSchema<T>(this);
+  optional(): OptionalSchema<T, this> {
+    return new OptionalSchema<T, this>(this);
   }
 
   nullable(): Schema<T | null> {
@@ -257,13 +257,28 @@ export class Schema<T> {
   }
 }
 
+export class WrappedSchema<S extends Schema<unknown>, T> extends Schema<T> {
+  readonly inner: S;
+
+  constructor(
+    inner: S,
+    safeParseFn: (value: unknown, context?: Context) => Result<T>,
+    description?: Description,
+    values?: Iterable<T>,
+  ) {
+    super(safeParseFn, description, values);
+    this.inner = inner;
+  }
+}
+
 /** A schema that accepts an absent value, which is what makes the member it stands for optional in an object. */
-export class OptionalSchema<T> extends Schema<T | undefined> {
+export class OptionalSchema<T, S extends Schema<T> = Schema<T>> extends WrappedSchema<S, T | undefined> {
   declare [optional]: true;
 
-  constructor(schema: Schema<T>) {
+  constructor(schema: S) {
     const union = createUnionSchema([createUndefinedSchema(), schema]);
     super(
+      schema,
       (value, context) => union[internalParse](value, context),
       () => union.description,
       union[enumerableValues],
