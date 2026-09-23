@@ -153,6 +153,16 @@ Deno.test('array schema validates arrays', () => {
   assertThrows(() => schema.parse(null), 'Expected array, got null');
 });
 
+Deno.test('array schema exposes its element schema', () => {
+  const element = z.string().transform((value) => value.length);
+  const schema = z.array(element);
+
+  assert(schema instanceof z.ArraySchema);
+  assert(schema.element === element);
+  assert(JSON.stringify(schema.parse(['a', 'abc'])) === JSON.stringify([1, 3]));
+  assertThrows(() => schema.parse(['a', 2]), 'Expected string, got number 2 at [1]');
+});
+
 // Test tuple schema
 Deno.test('tuple schema validates tuples', () => {
   const schema = z.tuple([z.string(), z.number(), z.boolean()]);

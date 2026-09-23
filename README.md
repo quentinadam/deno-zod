@@ -16,6 +16,13 @@ const schema: z.Schema<{ age: number; name: string }> = z.object({ age: z.number
 const parsed: { age: number; name: string } = schema.parse(data);
 ```
 
+`z.array(element)` returns an `ArraySchema` whose `element` is the schema used to parse each item:
+
+```ts
+const tags = z.array(z.string());
+tags.element.parse('one');
+```
+
 ## Errors
 
 `parse` throws a `ParseError`, whose `message` states the path of each failure in JavaScript notation and whose `errors`
