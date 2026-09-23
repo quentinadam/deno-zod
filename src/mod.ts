@@ -347,31 +347,40 @@ function createTypeSchema<T>(
   );
 }
 
-function createArraySchema<T>(schema: Schema<T>): Schema<T[]> {
-  return new Schema((value, context): Result<T[]> => {
-    if (!Array.isArray(value)) {
-      return { success: false, mismatch: true };
-    }
-    const parsedItems = new Array<T>();
-    const failedIndexes = new Array<number>();
-    for (let index = 0; index < value.length; index++) {
-      const result = schema[internalParse](value[index]);
-      if (result.success) {
-        parsedItems.push(result.data);
-      } else {
-        failedIndexes.push(index);
+export class ArraySchema<T> extends Schema<T[]> {
+  readonly element: Schema<T>;
+
+  constructor(element: Schema<T>) {
+    super((value, context): Result<T[]> => {
+      if (!Array.isArray(value)) {
+        return { success: false, mismatch: true };
       }
-    }
-    if (failedIndexes.length === 0) {
-      return { success: true, data: parsedItems };
-    }
-    if (context !== undefined) {
-      for (const index of failedIndexes) {
-        schema[internalParse](value[index], { path: [...context.path, index], errors: context.errors });
+      const parsedItems = new Array<T>();
+      const failedIndexes = new Array<number>();
+      for (let index = 0; index < value.length; index++) {
+        const result = element[internalParse](value[index]);
+        if (result.success) {
+          parsedItems.push(result.data);
+        } else {
+          failedIndexes.push(index);
+        }
       }
-    }
-    return { success: false };
-  }, 'array');
+      if (failedIndexes.length === 0) {
+        return { success: true, data: parsedItems };
+      }
+      if (context !== undefined) {
+        for (const index of failedIndexes) {
+          element[internalParse](value[index], { path: [...context.path, index], errors: context.errors });
+        }
+      }
+      return { success: false };
+    }, 'array');
+    this.element = element;
+  }
+}
+
+function createArraySchema<T>(schema: Schema<T>): ArraySchema<T> {
+  return new ArraySchema(schema);
 }
 
 function createBigIntSchema(): Schema<bigint> {
