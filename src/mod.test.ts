@@ -163,6 +163,26 @@ Deno.test('array schema exposes its element schema', () => {
   assertThrows(() => schema.parse(['a', 2]), 'Expected string, got number 2 at [1]');
 });
 
+Deno.test('schema wrappers retain their input schemas', () => {
+  const array = z.array(z.string());
+  const optional = array.optional();
+  const transformed = optional.transform((values) => values?.length ?? 0);
+  const refined = transformed.refine((length) => length > 0, 'At least one value is required');
+  const described = refined.describe('non-empty values');
+
+  assert(optional.inner === array);
+  assert(transformed.inner === optional);
+  assert(refined.inner === transformed);
+  assert(described.inner === refined);
+  const input: z.ArraySchema<string> = described.inner.inner.inner.inner;
+  assert(input === array);
+  const standalone: string | undefined = z.optional(z.string()).parse('one');
+  assert(standalone === 'one');
+  assert(described.parse(['one', 'two']) === 2);
+  assertThrows(() => described.parse([]), 'At least one value is required');
+  assertThrows(() => described.parse(['one', 2]), 'Expected string, got number 2 at [1]');
+});
+
 // Test tuple schema
 Deno.test('tuple schema validates tuples', () => {
   const schema = z.tuple([z.string(), z.number(), z.boolean()]);

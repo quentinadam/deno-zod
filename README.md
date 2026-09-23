@@ -23,6 +23,15 @@ const tags = z.array(z.string());
 tags.element.parse('one');
 ```
 
+`optional`, `transform`, `refine`, and `describe` retain the schema they wrap in `inner`. Following `inner` identifies
+the input schema even when the outer schema produces a different type:
+
+```ts
+const tags = z.array(z.string()).transform((values) => new Set(values));
+tags.inner.element.parse('one'); // string
+tags.parse(['one']); // Set<string>
+```
+
 ## Errors
 
 `parse` throws a `ParseError`, whose `message` states the path of each failure in JavaScript notation and whose `errors`
